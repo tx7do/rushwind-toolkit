@@ -1,4 +1,12 @@
+<div align="center">
+
 # rushwind-toolkit
+
+**中文** | [English](./README.en-US.md) | [日本語](./README.ja-JP.md)
+
+</div>
+
+---
 
 RushWind 生态工具箱：[`rush` CLI](#命令) + [`rush-gen` 核心库](#仓库结构)。
 
@@ -6,10 +14,10 @@ RushWind 生态工具箱：[`rush` CLI](#命令) + [`rush-gen` 核心库](#仓�
 [rushwind-admin](https://github.com/tx7do/rushwind-admin)（契约驱动的管理后台脚手架）
 覆盖开发链里真实存在的缺口。
 
-定位：[go-wind-toolkit](https://github.com/tx7do/go-wind-toolkit) 服务 Go/Kratos 侧，
-本仓服务 Rust 侧——不做全家桶（proto 生成走 `build.rs` 的 rushwind-gen-http、前端
-页面生成复用 gowind frontendgen、watch/交叉编译交给 cargo 生态），只做 Rust 侧
-没有对应物的那部分。
+定位：只做 RushWind 侧没有对应物的那部分，不做全家桶——契约与路由生成已由
+`build.rs` 里的 rushwind-gen-http 覆盖（proto 进来，路由表、错误映射、服务
+trait 出去，零手写），watch 与交叉编译交给 cargo 生态，前端页面生成不在本仓
+范围。
 
 ## 安装
 
@@ -133,11 +141,10 @@ rushwind-toolkit/
 - [x] `rush new`：新项目脚手架（内嵌自包含模板 + 外部模板整树拷贝与包名
       重命名）
 - [ ] `rush testbed`：差分回归台架的 fixture 重建 / 全量路由 sweep 包装
-- [ ] 前端页面生成：与 go-wind-toolkit 的 frontendgen（Vben / Element /
-      React 三栈）做文档级集成，而非在 Rust 侧重写
+- [ ] 前端页面生成：Vben / Element / React 三栈的页面脚手架（优先对接
+      既有前端生成链，而非在 Rust 侧重写）
 
 ## 相关仓库
 
 - [rushwind](https://github.com/tx7do/rushwind) — Rust 微服务框架本体
 - [rushwind-admin](https://github.com/tx7do/rushwind-admin) — 契约驱动的管理后台脚手架
-- [go-wind-toolkit](https://github.com/tx7do/go-wind-toolkit) — Go/Kratos 侧工具箱

@@ -17,7 +17,7 @@ use rush_gen::project::{self, NewOptions};
     name = "rush",
     version,
     propagate_version = true,
-    about = "RushWind 生态工具箱：接管快照仓、维护契约清单（生成能力按路线图演进）"
+    about = "RushWind 生态工具箱：接管快照仓、维护契约清单、生成实体链与项目脚手架"
 )]
 struct Cli {
     #[command(subcommand)]
