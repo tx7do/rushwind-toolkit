@@ -184,7 +184,7 @@ struct EntitySpec {
     global: bool,
 }
 
-fn pascal_of(snake: &str) -> String {
+pub fn pascal_of(snake: &str) -> String {
     snake
         .split('_')
         .filter(|s| !s.is_empty())
@@ -198,7 +198,7 @@ fn pascal_of(snake: &str) -> String {
         .collect()
 }
 
-fn plural_of(snake: &str) -> String {
+pub fn plural_of(snake: &str) -> String {
     if snake.ends_with('s')
         || snake.ends_with('x')
         || snake.ends_with('z')
@@ -219,7 +219,7 @@ fn plural_of(snake: &str) -> String {
     }
 }
 
-fn camel_of(snake: &str) -> String {
+pub fn camel_of(snake: &str) -> String {
     let pascal = pascal_of(snake);
     let mut cs = pascal.chars();
     match cs.next() {

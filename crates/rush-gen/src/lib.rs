@@ -12,6 +12,7 @@
 pub mod adopt;
 pub mod entity;
 pub mod manifest;
+pub mod pages;
 pub mod project;
 pub mod testbed;
 

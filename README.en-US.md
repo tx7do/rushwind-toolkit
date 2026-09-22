@@ -41,7 +41,8 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
 | `rush adopt` | ✅ | Turn a rushwind-admin snapshot from an upstream mirror into a downstream-owned repo |
 | `rush manifest` | ✅ | Check / rebuild the sha256 manifests of the proto and react synced surfaces |
 | `rush gen entity` | ✅ | Generate the full backend chain of a domain entity |
-| `rush new` | ✅ | Scaffold a new project that compiles and runs with plain `cargo run` |
+| `rush new` | ✅ | Scaffold a new project that compiles and runs with plain `cargo run` (memory / postgres variants) |
+| `rush gen pages` | ✅ | React frontend CRUD page set (self-contained types, no upstream TS client needed) |
 | `rush testbed` | ✅ | Differential-rig orchestration and report summaries (never starts docker) |
 
 ### `rush adopt` — downstream takeover (step one of secondary development)
@@ -150,8 +151,42 @@ rushwind-admin with three entities — code arm, global+enum, and all
 three combined — zero warnings); follow up with `cargo fmt`.
 
 `--dry-run` previews every action without writing. Notes about deployed
-databases and the manual follow-ups (seed / frontend / testbed) appear
-in the command output.
+databases and the manual follow-ups (seed / testbed) appear in the
+command output.
+
+### `rush gen pages` — React frontend CRUD page set
+
+Generates the React frontend page set for an entity produced by
+`rush gen entity` (template baseline: the repo's dict page pattern):
+
+```shell
+rush gen pages widget \
+  --field code:string --field label:string \
+  --field "state:enum(0=OFF,1=ON@default=ON)" --code-field code
+```
+
+What gets generated (all under `frontend/admin/react/`):
+
+- `src/api/hooks/<entity>.ts` — **self-contained types + raw requestApi
+  calls**: no upstream TS-client regeneration needed; rides the same
+  axios channel as the generated client (token injection and error
+  interception apply)
+- `src/pages/app/<group>/<plural>/` — ProTable list + DrawerForm edit
+  drawer + constants + index (columns and form controls are field
+  driven; enums/booleans render as tags)
+- `src/locales/zh-CN|en-US/_modules/<entity>.json` — bilingual copy
+  skeletons
+
+Route registration is backend menu-seed driven: dropping the page files
+in place is enough for the dynamic router to pick them up; the nav entry
+appears once a menu row is seeded in seed.rs (the generator's notes say
+so). The field syntax matches gen entity exactly — keep
+`--field`/`--code-field`/`--route-prefix` identical across both commands
+to stay aligned.
+
+`--group` picks the page group directory (default `system`); `--dry-run`
+previews. Follow up with `pnpm typecheck` (verified green against the
+real rushwind-admin frontend).
 
 ### `rush new` — new project scaffold
 
@@ -161,10 +196,17 @@ rush new my-server && cd my-server && cargo run
 
 The embedded template is self-contained: rushwind git dependencies
 pinned at the same rev rushwind-admin consumes, one YAML document
-assembling the memory storage engine, an automatic CRUD edge (`/items`),
-and an HTTP server — after `cargo run`, `curl /health`, `/wired`, and
-`/items` per the printed hints to see the whole chain. `git init` runs
-by default (`--no-git` skips); `--dir` picks the parent directory.
+assembling storage, an automatic CRUD edge (`/items`), and an HTTP
+server — after `cargo run`, `curl /health`, `/wired`, and `/items` per
+the printed hints to see the whole chain. `git init` runs by default
+(`--no-git` skips); `--dir` picks the parent directory.
+
+Storage variant `--storage memory|postgres` (default memory): the
+postgres variant uses the SeaORM dynamic repository (`SeaRepo::connect`
+plus create-on-startup tables), with the DSN in
+`storage.settings.url`. Both variants are runtime-verified (the
+postgres one against a standalone Postgres container, CRUD and
+persistence included).
 
 `--template <dir>` accepts any external template (e.g. the rushwind
 repo's `examples/bootstrap-demo`): the tree copies wholesale (skipping

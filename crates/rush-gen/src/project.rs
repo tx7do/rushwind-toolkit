@@ -18,6 +18,16 @@ use crate::{Error, Result};
 /// 模板钉住的 rushwind 框架 rev（与 rushwind-admin 的 workspace 依赖一致）。
 pub const PINNED_RUSHWIND_REV: &str = "2bc3a96c742539a195b608b995be1c3bcc1545a3";
 
+/// 内嵌模板的存储变体。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StorageKind {
+    /// 内存存储（开箱即跑，无需任何服务）。
+    #[default]
+    Memory,
+    /// PostgreSQL（SeaORM 动态仓库，`storage.settings.url` 配 DSN）。
+    Postgres,
+}
+
 /// `rush new` 选项。
 #[derive(Debug, Clone)]
 pub struct NewOptions {
@@ -25,6 +35,8 @@ pub struct NewOptions {
     pub name: String,
     /// 目标父目录，项目创建在 `<dest>/<name>`。
     pub dest: PathBuf,
+    /// 内嵌模板的存储变体（`--template` 给出时忽略）。
+    pub storage: StorageKind,
     /// 外部模板目录；缺省用内嵌模板。
     pub template: Option<PathBuf>,
     /// 在项目目录里 `git init`。
@@ -46,7 +58,7 @@ pub struct NewReport {
 }
 
 /// 内嵌模板文件：(模板内相对路径, 目标相对路径, 内容)。
-const EMBEDDED: [(&str, &str, &str); 5] = [
+const EMBEDDED_MEMORY: [(&str, &str, &str); 5] = [
     (
         "Cargo.toml",
         "Cargo.toml",
@@ -61,6 +73,35 @@ const EMBEDDED: [(&str, &str, &str); 5] = [
         "README.md",
         "README.md",
         include_str!("../templates/new/README.md"),
+    ),
+    (
+        "gitignore",
+        ".gitignore",
+        include_str!("../templates/new/gitignore"),
+    ),
+    (
+        "rustfmt.toml",
+        "rustfmt.toml",
+        include_str!("../templates/new/rustfmt.toml"),
+    ),
+];
+
+/// PostgreSQL 变体：依赖加 rushwind-storage-seaorm，main 换成 SeaRepo 组装。
+const EMBEDDED_POSTGRES: [(&str, &str, &str); 5] = [
+    (
+        "Cargo.toml",
+        "Cargo.toml",
+        include_str!("../templates/new-postgres/Cargo.toml"),
+    ),
+    (
+        "src_main.rs",
+        "src/main.rs",
+        include_str!("../templates/new-postgres/src_main.rs"),
+    ),
+    (
+        "README.md",
+        "README.md",
+        include_str!("../templates/new-postgres/README.md"),
     ),
     (
         "gitignore",
@@ -119,8 +160,12 @@ fn template_package_name(template_dir: &Path) -> Result<String> {
     )))
 }
 
-fn render_embedded(name: &str) -> Vec<(String, Vec<u8>)> {
-    EMBEDDED
+fn render_embedded(name: &str, storage: StorageKind) -> Vec<(String, Vec<u8>)> {
+    let embedded = match storage {
+        StorageKind::Memory => &EMBEDDED_MEMORY,
+        StorageKind::Postgres => &EMBEDDED_POSTGRES,
+    };
+    embedded
         .iter()
         .map(|(_src, dst, content)| {
             let rendered = content
@@ -190,7 +235,17 @@ pub fn new_project(opts: &NewOptions) -> Result<NewReport> {
     }
 
     let (files, template_source, renamed_from) = match &opts.template {
-        None => (render_embedded(&opts.name), "embedded".to_owned(), None),
+        None => (
+            render_embedded(&opts.name, opts.storage),
+            format!(
+                "embedded/{}",
+                match opts.storage {
+                    StorageKind::Memory => "memory",
+                    StorageKind::Postgres => "postgres",
+                }
+            ),
+            None,
+        ),
         Some(dir) => {
             if !dir.join("Cargo.toml").is_file() {
                 return Err(Error::InvalidInput(format!(
@@ -253,7 +308,7 @@ mod tests {
 
     #[test]
     fn embedded_template_renders_with_name_and_rev() {
-        let files = render_embedded("myapp");
+        let files = render_embedded("myapp", StorageKind::Memory);
         assert_eq!(files.len(), 5);
         let cargo = files
             .iter()
@@ -267,6 +322,16 @@ mod tests {
         let text = String::from_utf8_lossy(&main.1);
         assert!(text.contains("[myapp]"));
         assert!(!text.contains("@@"));
+
+        let pg = render_embedded("myapp", StorageKind::Postgres);
+        let pg_main =
+            String::from_utf8_lossy(&pg.iter().find(|(rel, _)| rel == "src/main.rs").unwrap().1);
+        assert!(pg_main.contains("SeaRepo::connect(url, schema())"));
+        assert!(pg_main.contains("migrate_create"));
+        assert!(pg_main.contains("engine: postgres"));
+        let pg_cargo =
+            String::from_utf8_lossy(&pg.iter().find(|(rel, _)| rel == "Cargo.toml").unwrap().1);
+        assert!(pg_cargo.contains("rushwind-storage-seaorm"));
     }
 
     #[test]
@@ -315,6 +380,7 @@ mod tests {
         let opts = NewOptions {
             name: "myapp".to_owned(),
             dest: dir.path().to_path_buf(),
+            storage: StorageKind::Memory,
             template: None,
             git: true,
             dry_run: false,

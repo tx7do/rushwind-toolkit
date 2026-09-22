@@ -40,7 +40,8 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
 | `rush adopt` | ✅ | rushwind-admin スナップショットを「上流ミラー」から下流所有リポジトリへ引き取る |
 | `rush manifest` | ✅ | proto / react 同期面の sha256 マニフェストを検証・再構築 |
 | `rush gen entity` | ✅ | ドメインエンティティのバックエンド一式を生成 |
-| `rush new` | ✅ | `cargo run` ですぐ動く新規プロジェクトを生成 |
+| `rush new` | ✅ | `cargo run` ですぐ動く新規プロジェクトを生成（memory / postgres の両バリアント） |
+| `rush gen pages` | ✅ | React フロントエンド CRUD ページ一式（自己完結型。上流 TS クライアント不要） |
 | `rush testbed` | ✅ | 差分ベンチのオーケストレーションとレポート要約（docker は起動しない） |
 
 ### `rush adopt` —— 下流の引き取り（二次開発の最初の一歩）
@@ -145,8 +146,39 @@ tenant_id）は自動で付きます。生成後の `cargo check` はそのま�
 の組み合わせ——により警告ゼロで検証済み）。続けて `cargo fmt` を推奨。
 
 `--dry-run` は書き込まずに全アクションをプレビュー。既存 DB への注意や
-seed / フロントエンド / testbed など後続の手動ステップはコマンド出力の注記
-に表示されます。
+seed / testbed など後続の手動ステップはコマンド出力の注記に表示されます。
+
+### `rush gen pages` —— React フロントエンド CRUD ページ一式
+
+`rush gen entity` が生成したエンティティに対応する React フロントエンド
+ページ一式を生成します（テンプレート基準：リポジトリの dict ページパター
+ン）：
+
+```shell
+rush gen pages widget \
+  --field code:string --field label:string \
+  --field "state:enum(0=OFF,1=ON@default=ON)" --code-field code
+```
+
+生成物（すべて `frontend/admin/react/` の下）：
+
+- `src/api/hooks/<entity>.ts` —— **自己完結型の型 + requestApi 直接呼び出
+  し**：上流での TS クライアント再生成に依存せず、生成クライアントと同じ
+  axios 経路（トークン注入・エラーインターセプトも有効）に乗ります
+- `src/pages/app/<group>/<plural>/` —— ProTable 一覧 + DrawerForm 編集ド
+  ロワー + constants + index（列とフォームコントロールはフィールド駆動。
+  列挙/ブールはタグ描画）
+- `src/locales/zh-CN|en-US/_modules/<entity>.json` —— 日英両言語のコピー
+  スケルトン
+
+ルート登録はバックエンドのメニューシード駆動です：ページファイルを配置す
+れば動的ルーターが拾い、ナビ表示は seed.rs へのメニュー追加で出ます（生
+成器の注記に記載）。フィールド構文は gen entity と完全に同じ——両コマン
+ドで `--field`/`--code-field`/`--route-prefix` を揃えてください。
+
+`--group` でページグループディレクトリを指定（既定 `system`）。
+`--dry-run` でプレビュー。生成後は `pnpm typecheck` を推奨（実際の
+rushwind-admin フロントエンドでグリーンを検証済み）。
 
 ### `rush new` —— 新規プロジェクトのスキャフォールド
 
@@ -155,11 +187,16 @@ rush new my-server && cd my-server && cargo run
 ```
 
 内蔵テンプレートは自己完結しています：rushwind の git 依存は
-rushwind-admin と同じ rev にピン留めされ、1 枚の YAML ドキュメントでメモリ
-ストレージエンジン、自動 CRUD エッジ（`/items`）、HTTP サーバーを組み立て
-ます。`cargo run` の後に表示される案内へ従って `curl /health`、`/wired`、
+rushwind-admin と同じ rev にピン留めされ、1 枚の YAML ドキュメントでスト
+レージ、自動 CRUD エッジ（`/items`）、HTTP サーバーを組み立てます。`cargo run` の後に表示される案内へ従って `curl /health`、`/wired`、
 `/items` を叩けば一式を体験できます。`git init` はデフォルトで実行
 （`--no-git` でスキップ）。`--dir` で親ディレクトリを指定します。
+
+ストレージバリアント `--storage memory|postgres`（既定は memory）：
+postgres バリアントは SeaORM ダイナミックリポジトリ（`SeaRepo::connect` +
+起動時テーブル作成）を使い、DSN は `storage.settings.url` に置きます。両
+バリアントとも実行検証済み（postgres は独立した Postgres コンテナで CRUD
+と永続化を確認）。
 
 `--template <dir>` で任意の外部テンプレート（rushwind リポジトリの
 `examples/bootstrap-demo` など）に差し替え可能：ツリーごとコピーし

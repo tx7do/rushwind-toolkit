@@ -1,0 +1,17 @@
+[package]
+name = "@@NAME@@"
+description = "A RushWind service: config-driven assembly via rushwind-bootstrap, PostgreSQL storage."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+license = "MIT"
+publish = false
+
+[dependencies]
+rushwind-bootstrap = { git = "https://github.com/tx7do/rushwind", rev = "@@REV@@" }
+rushwind-storage = { git = "https://github.com/tx7do/rushwind", rev = "@@REV@@" }
+rushwind-storage-memory = { git = "https://github.com/tx7do/rushwind", rev = "@@REV@@" }
+rushwind-storage-seaorm = { git = "https://github.com/tx7do/rushwind", rev = "@@REV@@" }
+rushwind-transport = { git = "https://github.com/tx7do/rushwind", rev = "@@REV@@" }
+axum = { version = "0.8", default-features = false }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

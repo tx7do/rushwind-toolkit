@@ -9,7 +9,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use rush_gen::adopt::{self, AdoptOptions, UpstreamBaseline};
 use rush_gen::entity::{self, EntityOptions, FieldKind, FieldSpec};
 use rush_gen::manifest::{self, CheckReport, Flavor};
-use rush_gen::project::{self, NewOptions};
+use rush_gen::pages::{self, PagesOptions};
+use rush_gen::project::{self, NewOptions, StorageKind};
 use rush_gen::testbed::{self, RunOptions};
 
 /// rush — RushWind 生态工具箱
@@ -73,6 +74,9 @@ enum Commands {
         /// 目标父目录
         #[arg(long, default_value = ".")]
         dir: PathBuf,
+        /// 内嵌模板的存储变体（--template 给出时忽略）
+        #[arg(long, value_enum, default_value_t = StorageArg::Memory)]
+        storage: StorageArg,
         /// 外部模板目录（缺省用内嵌模板）
         #[arg(long)]
         template: Option<PathBuf>,
@@ -132,6 +136,31 @@ enum TestbedAction {
 
 #[derive(Debug, Subcommand)]
 enum GenTarget {
+    /// 生成 React 前端 CRUD 页面组（hooks + List + Drawer + locale，自包含
+    /// 类型走 requestApi，不依赖上游 TS 客户端；字段语法与 gen entity 一致）
+    Pages {
+        /// 实体名，snake_case 单数（须与 gen entity 一致）
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// 仓库根目录
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// 页面分组目录（pages/app/<group>/<plural>，缺省 system）
+        #[arg(long)]
+        group: Option<String>,
+        /// 路由前缀（须与 gen entity 一致，缺省 /admin/v1/<复数>）
+        #[arg(long)]
+        route_prefix: Option<String>,
+        /// 业务字段，语法同 gen entity --field；可重复
+        #[arg(long = "field", value_name = "NAME:KIND")]
+        fields: Vec<String>,
+        /// 唯一编码字段（抽屉必填 + 搜索列）
+        #[arg(long, value_name = "FIELD")]
+        code_field: Option<String>,
+        /// 只报告不落盘
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// 生成一个标准 CRUD 实体的后端全链：消息面 proto + admin HTTP 注解面
     /// proto + SeaORM 实体 + repo（repo_shell! 宏）+ Handlers trait 实现 +
     /// data/migration/repos/services/mount 五处注册 + proto MANIFEST 重建。
@@ -181,6 +210,23 @@ enum FlavorArg {
     Proto,
     /// react 前端快照面（frontend/admin/react）
     React,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum StorageArg {
+    /// 内存存储（开箱即跑）
+    Memory,
+    /// PostgreSQL（SeaORM 动态仓库）
+    Postgres,
+}
+
+impl From<StorageArg> for StorageKind {
+    fn from(value: StorageArg) -> Self {
+        match value {
+            StorageArg::Memory => Self::Memory,
+            StorageArg::Postgres => Self::Postgres,
+        }
+    }
 }
 
 impl From<FlavorArg> for Flavor {
@@ -257,6 +303,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::New {
             name,
             dir,
+            storage,
             template,
             no_git,
             dry_run,
@@ -264,6 +311,7 @@ fn run(cli: Cli) -> Result<()> {
             let opts = NewOptions {
                 name,
                 dest: dir,
+                storage: storage.into(),
                 template,
                 git: !no_git,
                 dry_run,
@@ -323,6 +371,44 @@ fn run(cli: Cli) -> Result<()> {
         },
         Commands::Gen {
             target:
+                GenTarget::Pages {
+                    name,
+                    repo,
+                    group,
+                    route_prefix,
+                    fields,
+                    code_field,
+                    dry_run,
+                },
+        } => {
+            let mut parsed = Vec::with_capacity(fields.len());
+            for spec in &fields {
+                let Some((fname, kind)) = spec.rsplit_once(':') else {
+                    bail!("字段格式应为 name:kind（如 code:string）：{spec}");
+                };
+                let Some(kind) = FieldKind::parse(kind) else {
+                    bail!("未知字段类型 {kind}（支持 string|i32|u32|bool|f64 或 enum(0=A,1=B@default=B)）：{spec}");
+                };
+                parsed.push(FieldSpec {
+                    name: fname.to_owned(),
+                    kind,
+                });
+            }
+            let opts = PagesOptions {
+                repo_root: repo,
+                name,
+                group,
+                route_prefix,
+                fields: parsed,
+                code_field,
+                dry_run,
+            };
+            let report = pages::generate_pages(&opts).context("gen pages 失败")?;
+            render_pages(&report, dry_run);
+            Ok(())
+        }
+        Commands::Gen {
+            target:
                 GenTarget::Entity {
                     name,
                     repo,
@@ -366,6 +452,25 @@ fn run(cli: Cli) -> Result<()> {
             let report = entity::generate_entity(&opts).context("gen entity 失败")?;
             render_gen(&report, dry_run);
             Ok(())
+        }
+    }
+}
+
+fn render_pages(report: &pages::PagesReport, dry_run: bool) {
+    let tag = if dry_run { "[dry-run] " } else { "" };
+    if !report.created.is_empty() {
+        println!("{tag}新建文件：");
+        for path in &report.created {
+            println!("  + {}", path.display());
+        }
+    }
+    for item in &report.skipped {
+        println!("  = 跳过 {item}");
+    }
+    if !report.notes.is_empty() {
+        println!();
+        for note in &report.notes {
+            println!("注意：{note}");
         }
     }
 }

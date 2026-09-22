@@ -36,7 +36,8 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
 | `rush adopt` | ✅ | 把 rushwind-admin 快照从“上游镜像”接管为下游自有仓 |
 | `rush manifest` | ✅ | 校验 / 重建 proto 与 react 两个同步面的 sha256 清单 |
 | `rush gen entity` | ✅ | 领域实体后端全链生成 |
-| `rush new` | ✅ | 从模板创建可编译、可直接 cargo run 的新项目 |
+| `rush new` | ✅ | 从模板创建可编译、可直接 cargo run 的新项目（memory / postgres 双变体） |
+| `rush gen pages` | ✅ | React 前端 CRUD 页面组生成（自包含类型，不依赖上游 TS 客户端） |
 | `rush testbed` | ✅ | 差分台架编排与报告摘要（绝不代启 docker） |
 
 ### `rush adopt` —— 下游接管（二次开发第一步）
@@ -126,8 +127,36 @@ i32↔文本转换函数、`@default` 为未识别值回退。
 生成后 `cargo check` 即绿（在真实 rushwind-admin 上以三个实体验证过：code
 臂、全局+枚举、三者组合，零警告），建议顺手 `cargo fmt`。
 
-`--dry-run` 预览全部动作不落盘。已部署库的说明与 seed / 前端 / testbed 等
-后续手动步骤见命令输出的提示。
+`--dry-run` 预览全部动作不落盘。已部署库的说明与 seed / testbed 等后续
+手动步骤见命令输出的提示。
+
+### `rush gen pages` —— React 前端 CRUD 页面组
+
+为 `rush gen entity` 生成的实体配套生成 React 前端页面组（模板基准：仓内
+dict 页面模式）：
+
+```shell
+rush gen pages widget \
+  --field code:string --field label:string \
+  --field "state:enum(0=OFF,1=ON@default=ON)" --code-field code
+```
+
+生成物（都在 `frontend/admin/react/` 下）：
+
+- `src/api/hooks/<entity>.ts` —— **自包含类型 + requestApi 原生调用**：不
+  依赖上游重新生成 TS 客户端，与生成客户端走同一条 axios 通道（token 注
+  入、错误拦截照常生效）
+- `src/pages/app/<group>/<plural>/` —— ProTable 列表 + DrawerForm 编辑抽
+  屉 + constants + index（字段驱动列与表单控件；枚举/布尔渲染 Tag）
+- `src/locales/zh-CN|en-US/_modules/<entity>.json` —— 双语文案骨架
+
+路由注册是后端菜单种子驱动的：页面文件放到位即被动态路由拾取，导航出现
+需在 seed.rs 加菜单项（生成器的提示会带上）。字段语法与 gen entity 完全
+一致，两个命令的 `--field`/`--code-field`/`--route-prefix` 保持相同取值
+即可对齐。
+
+`--group` 指定页面分组目录（缺省 `system`）；`--dry-run` 预览。生成后建
+议 `pnpm typecheck`（已在真实 rushwind-admin 前端上验证通过）。
 
 ### `rush new` —— 新项目脚手架
 
@@ -136,9 +165,14 @@ rush new my-server && cd my-server && cargo run
 ```
 
 内嵌模板自包含：rushwind git 依赖钉在与 rushwind-admin 一致的 rev，一个
-YAML 文档组装内存存储、自动 CRUD 边（`/items`）和 HTTP 服务器——`cargo
-run` 后按提示 `curl /health`、`/wired`、`/items` 即可体验全链。默认 `git
+YAML 文档组装存储、自动 CRUD 边（`/items`）和 HTTP 服务器——`cargo run`
+后按提示 `curl /health`、`/wired`、`/items` 即可体验全链。默认 `git
 init`（`--no-git` 跳过），`--dir` 指定目标父目录。
+
+存储变体 `--storage memory|postgres`（缺省 memory）：postgres 变体走
+SeaORM 动态仓库（`SeaRepo::connect` + 启动建表），DSN 在
+`storage.settings.url`。两个变体都做过实跑验证（postgres 变体在独立
+Postgres 容器上验证了 CRUD 与落库持久化）。
 
 `--template <dir>` 可换成任意外部模板（如 rushwind 仓的
 `examples/bootstrap-demo`）：整树拷贝（跳过 `.git`/`target`），并按模板
