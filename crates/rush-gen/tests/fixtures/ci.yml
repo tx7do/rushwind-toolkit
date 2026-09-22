@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: gates (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      # The framework monorepo (rushwind crates, rust-utils) is consumed
+      # through git dependencies pinned by rev — cargo fetches them
+      # directly; no sibling checkout or layout assumptions.
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      # admin-proto's build script (and the framework generator's fixture
+      # test) invoke a real `protoc` — protox drops custom option bytes.
+      - name: Install protoc (ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc (windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc -y --no-progress
+        shell: pwsh
+
+      # Vendored protos must match MANIFEST.sha256 (anti-tamper gate).
+      # The go source repo is absent on CI, so the upstream-drift
+      # comparison self-skips inside the script (exit 0); drift
+      # acceptance happens on dev machines where both repos exist.
+      - name: Proto contract gate (MANIFEST consistency)
+        run: bash api/sync-protos.sh --check
+
+      # Frontend snapshot must match react.MANIFEST.sha256 (anti-tamper
+      # gate). The upstream source repo is absent on CI, so the drift
+      # comparison self-skips inside the script, same as the proto gate.
+      - name: Frontend snapshot gate (MANIFEST consistency)
+        run: bash ../frontend/admin/sync-react.sh --check
+
+      # Scoped to THIS repo's packages: `cargo fmt --all` would also
+      # enforce on the framework path-deps, which the framework repo's
+      # own CI owns.
+      - name: Format
+        run: cargo fmt -p proto -p auth -p admin-api -p admin-diff -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace

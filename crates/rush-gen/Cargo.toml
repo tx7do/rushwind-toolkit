@@ -1,0 +1,20 @@
+[package]
+name = "rush-gen"
+description = "Core library of the RushWind toolkit: sha256 manifest surfaces for the rushwind-admin snapshot (BOM-normalized proto contracts, git-aware react tree) and downstream adopt (baseline rebuild + CI mirror-gate stripping)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

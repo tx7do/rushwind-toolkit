@@ -1,0 +1,36 @@
+//! rush-gen — RushWind 生态工具箱核心库。
+//!
+//! * [`manifest`]：rushwind-admin 两个同步面（proto 契约 / react 前端
+//!   快照）的 sha256 清单构建、解析、校验与重建，算法逐字对齐被替换的
+//!   shell 脚本；
+//! * [`adopt`]：下游接管——以当前树为基线重建清单，并从 CI 剥离上游
+//!   镜像门禁步。
+//!
+//! 规划中：领域实体链生成（proto 模板 / SeaORM 实体 / migration /
+//! repo / service 骨架，见 rushwind-toolkit README 路线图）。
+
+pub mod adopt;
+pub mod manifest;
+
+use std::io;
+use std::path::PathBuf;
+
+/// 工具箱核心库错误。
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("io: {0}")]
+    Io(#[from] io::Error),
+    #[error("清单树不存在: {0}")]
+    TreeMissing(PathBuf),
+    #[error("清单文件缺失: {0}（先执行 rebuild）")]
+    ManifestMissing(PathBuf),
+    #[error("{0} 不在 git 工作树内（react 清单要求 git 忽略语义，与 sync-react.sh 一致）")]
+    NotGitWorkTree(PathBuf),
+    #[error("git check-ignore 执行失败: {0}")]
+    GitCheckIgnore(String),
+    #[error("清单行格式非法: {0}")]
+    BadManifestLine(String),
+}
+
+/// 库层 Result 别名。
+pub type Result<T> = std::result::Result<T, Error>;

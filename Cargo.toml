@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+license = "MIT"
+repository = "https://github.com/tx7do/rushwind-toolkit"
+
+[workspace.lints.clippy]
+all = "warn"
+undocumented_unsafe_blocks = "warn"
+
+[workspace.dependencies]
+rush-gen = { path = "crates/rush-gen", version = "0.1.0" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+walkdir = "2"

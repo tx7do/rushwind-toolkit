@@ -1,0 +1,21 @@
+[package]
+name = "rush-cli"
+description = "The `rush` CLI of the RushWind toolkit: adopt a rushwind-admin snapshot as a downstream-owned repo, check/rebuild the contract manifests; entity-chain generation lands per roadmap."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "rush"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+rush-gen = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
