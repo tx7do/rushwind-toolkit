@@ -12,6 +12,8 @@ pub mod adopt;
 pub mod entity;
 pub mod manifest;
 pub mod pages;
+mod pages_element;
+mod pages_vben;
 pub mod project;
 pub mod spec;
 pub mod testbed;

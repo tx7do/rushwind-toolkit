@@ -118,6 +118,7 @@ $('p-run').addEventListener('click', () => {
     route_prefix: optional('p-route'),
     fields,
     code_field: optional('p-code'),
+    stack: $('p-stack').value,
     dry_run: $('p-dry').checked,
   };
   if (!opts.repo_root) return renderError('p-status', '仓库根目录必填');

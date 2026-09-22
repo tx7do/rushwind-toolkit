@@ -42,6 +42,8 @@ pub struct EntitySpecFile {
     pub global: bool,
     /// 页面分组目录——`gen pages` 写回。
     pub group: Option<String>,
+    /// 最近一次生成页面的栈（react/vben/element）——`gen pages` 写回。
+    pub stack: Option<String>,
 }
 
 /// 规格 JSON 的序列化错误统一走输入非法通道。
@@ -95,6 +97,7 @@ pub fn from_parts(
         code_field: code_field.map(str::to_owned),
         global,
         group: None,
+        stack: None,
     }
 }
 
@@ -208,6 +211,7 @@ mod tests {
             code_field: Some("code".into()),
             global: false,
             group: Some("system".into()),
+            stack: Some("react".into()),
         };
         let json = serde_json::to_string_pretty(&file).unwrap();
         let back: EntitySpecFile = serde_json::from_str(&json).unwrap();

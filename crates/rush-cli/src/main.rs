@@ -136,9 +136,13 @@ enum TestbedAction {
 
 #[derive(Debug, Subcommand)]
 enum GenTarget {
-    /// 生成 React 前端 CRUD 页面组（hooks + List + Drawer + locale，自包含
-    /// 类型走 requestApi，不依赖上游 TS 客户端；字段语法与 gen entity 一致）
+    /// 生成前端 CRUD 页面组（--stack 选 react|vben|element；自包含类型走
+    /// requestApi，不依赖上游 TS 客户端；字段语法与 gen entity 一致。react
+    /// 菜单走后端 seed，vben/element 写前端静态路由模块）
     Pages {
+        /// 目标前端栈
+        #[arg(long, value_enum, default_value_t = StackArg::React)]
+        stack: StackArg,
         /// 实体名，snake_case 单数（须与 gen entity 一致）
         #[arg(value_name = "NAME")]
         name: String,
@@ -212,6 +216,26 @@ enum FlavorArg {
     Proto,
     /// react 前端快照面（frontend/admin/react）
     React,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum StackArg {
+    /// React 栈（frontend/admin/react，菜单走后端 seed）
+    React,
+    /// vue-vben 栈（views + 静态路由模块）
+    Vben,
+    /// vue-element 栈（pages + 静态路由模块）
+    Element,
+}
+
+impl From<StackArg> for rush_gen::pages::PagesStack {
+    fn from(value: StackArg) -> Self {
+        match value {
+            StackArg::React => Self::React,
+            StackArg::Vben => Self::Vben,
+            StackArg::Element => Self::Element,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -376,6 +400,7 @@ fn run(cli: Cli) -> Result<()> {
                 GenTarget::Pages {
                     name,
                     repo,
+                    stack,
                     group,
                     route_prefix,
                     fields,
@@ -403,6 +428,7 @@ fn run(cli: Cli) -> Result<()> {
                 route_prefix,
                 fields: parsed,
                 code_field,
+                stack: stack.into(),
                 dry_run,
             };
             let report = pages::generate_pages(&opts).context("gen pages 失败")?;

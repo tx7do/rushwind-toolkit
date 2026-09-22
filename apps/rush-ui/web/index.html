@@ -100,6 +100,14 @@
       <div class="grid">
         <div><label>仓库根目录（rushwind-admin）</label><input type="text" id="p-repo" placeholder="/home/you/Github/rushwind-admin" /></div>
         <div><label>实体名（须与 gen entity 一致）</label><input type="text" id="p-name" placeholder="widget" /></div>
+        <div>
+          <label>目标前端栈</label>
+          <select id="p-stack">
+            <option value="react">react（菜单走后端 seed）</option>
+            <option value="vben">vue-vben（静态路由模块）</option>
+            <option value="element">vue-element（静态路由模块）</option>
+          </select>
+        </div>
         <div><label>页面分组（缺省 system）</label><input type="text" id="p-group" placeholder="system" /></div>
         <div><label>路由前缀（可选，缺省继承规格）</label><input type="text" id="p-route" placeholder="/admin/v1/widgets" /></div>
         <div class="full">
@@ -115,7 +123,7 @@
         <button class="primary" id="p-run">生成</button>
         <span id="p-status" class="status"></span>
       </div>
-      <p class="hint">页面组 + 双语 locale + seed.rs 菜单种子（seed_gen_menu_&lt;name&gt;，按 path 幂等）。</p>
+      <p class="hint">react：页面组 + 双语 locale + seed.rs 菜单种子；vben / element：composables + 页面链 + 前端静态路由模块（菜单=路由条目）。</p>
       <pre id="p-report"></pre>
     </section>
 

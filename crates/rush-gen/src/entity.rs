@@ -45,6 +45,17 @@ pub struct EnumValues {
     pub default: String,
 }
 
+impl EnumValues {
+    /// 缺省文本对应的数值（parse 已保证 default 在取值集内）。
+    pub fn default_num(&self) -> i32 {
+        self.values
+            .iter()
+            .find(|(_, text)| *text == self.default)
+            .map(|(num, _)| *num)
+            .unwrap_or(0)
+    }
+}
+
 fn is_upper_snake(s: &str) -> bool {
     let mut cs = s.chars();
     let first_ok = cs.next().is_some_and(|c| c.is_ascii_uppercase());

@@ -34,8 +34,31 @@ pub struct PagesOptions {
     pub fields: Vec<FieldSpec>,
     /// 唯一编码字段（ drawers 里作必填并进搜索列）。
     pub code_field: Option<String>,
+    /// 目标前端栈；缺省 react。
+    pub stack: PagesStack,
     /// 只报告不落盘。
     pub dry_run: bool,
+}
+
+/// 目标前端栈。react 菜单走后端 seed；vben / element 是前端静态路由
+/// 模块（菜单=路由条目），由各自的生成器写入。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PagesStack {
+    #[default]
+    React,
+    Vben,
+    Element,
+}
+
+impl PagesStack {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::React => "react",
+            Self::Vben => "vben",
+            Self::Element => "element",
+        }
+    }
 }
 
 /// 生成结果报告。
@@ -49,17 +72,18 @@ pub struct PagesReport {
 }
 
 /// 派生好的命名全集。
-struct PagesSpec {
-    name: String,
-    pascal: String,
-    plural: String,
-    group: String,
-    route_prefix: String,
-    fields: Vec<FieldSpec>,
-    code_field: Option<String>,
+pub(crate) struct PagesSpec {
+    pub(crate) name: String,
+    pub(crate) pascal: String,
+    pub(crate) plural: String,
+    pub(crate) group: String,
+    pub(crate) route_prefix: String,
+    pub(crate) fields: Vec<FieldSpec>,
+    pub(crate) code_field: Option<String>,
+    pub(crate) stack: PagesStack,
     /// `--field` 缺省时从规格文件（`.rush/<name>.json`）载入的原文；
     /// 显式传字段时为 None。
-    loaded_spec: Option<crate::spec::EntitySpecFile>,
+    pub(crate) loaded_spec: Option<crate::spec::EntitySpecFile>,
 }
 
 fn validate(opts: &PagesOptions) -> Result<PagesSpec> {
@@ -118,6 +142,7 @@ fn validate(opts: &PagesOptions) -> Result<PagesSpec> {
         name: opts.name.clone(),
         pascal: pascal_of(&opts.name),
         plural,
+        stack: opts.stack,
         group,
         route_prefix: route_prefix
             .unwrap_or_else(|| format!("/admin/v1/{}", plural_of(&opts.name))),
@@ -137,9 +162,35 @@ fn ts_type(kind: &FieldKind) -> &'static str {
     }
 }
 
-/// 生成页面组。新文件拒绝覆盖。
+/// 生成页面组：按 --stack 分发到对应栈的生成器。新文件拒绝覆盖。
 pub fn generate_pages(opts: &PagesOptions) -> Result<PagesReport> {
     let spec = validate(opts)?;
+    let mut report = match spec.stack {
+        PagesStack::React => generate_react(opts, &spec)?,
+        PagesStack::Vben => crate::pages_vben::generate(opts, &spec)?,
+        PagesStack::Element => crate::pages_element::generate(opts, &spec)?,
+    };
+    // 规格写回：group + stack 落档（字段真相归 gen entity，本命令只补
+    // 页面视角的两个字段）；dry-run 不写。
+    if !opts.dry_run {
+        let spec_path = crate::spec::spec_path(&opts.repo_root, &spec.name);
+        if spec_path.is_file() {
+            let mut file = match &spec.loaded_spec {
+                Some(file) => file.clone(),
+                None => crate::spec::load(&opts.repo_root, &spec.name)?,
+            };
+            file.group = Some(spec.group.clone());
+            file.stack = Some(spec.stack.as_str().to_owned());
+            crate::spec::save(&file, &opts.repo_root)?;
+            if !report.edited.contains(&spec_path) {
+                report.edited.push(spec_path);
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn generate_react(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesReport> {
     let react_root = opts.repo_root.join("frontend/admin/react");
     if !react_root.join("package.json").is_file() {
         return Err(Error::InvalidInput(format!(
@@ -154,25 +205,25 @@ pub fn generate_pages(opts: &PagesOptions) -> Result<PagesReport> {
     let files: Vec<(PathBuf, String)> = vec![
         (
             react_root.join(format!("src/api/hooks/{}.ts", spec.name)),
-            hooks_file(&spec),
+            hooks_file(spec),
         ),
-        (page_dir.join("constants.ts"), constants_file(&spec)),
+        (page_dir.join("constants.ts"), constants_file(spec)),
         (
             page_dir.join(format!("{}List.tsx", spec.pascal)),
-            list_file(&spec),
+            list_file(spec),
         ),
         (
             page_dir.join(format!("{}Drawer.tsx", spec.pascal)),
-            drawer_file(&spec),
+            drawer_file(spec),
         ),
-        (page_dir.join("index.tsx"), index_file(&spec)),
+        (page_dir.join("index.tsx"), index_file(spec)),
         (
             react_root.join(format!("src/locales/zh-CN/_modules/{}.json", spec.name)),
-            locale_file(&spec, true),
+            locale_file(spec, true),
         ),
         (
             react_root.join(format!("src/locales/en-US/_modules/{}.json", spec.name)),
-            locale_file(&spec, false),
+            locale_file(spec, false),
         ),
     ];
     for (path, _) in &files {
@@ -223,7 +274,7 @@ pub fn generate_pages(opts: &PagesOptions) -> Result<PagesReport> {
                 })?;
             }
             if !had_fn {
-                let function = seed_menu_function(&spec);
+                let function = seed_menu_function(spec);
                 let edited = text.replacen(
                     "async fn seed_languages",
                     &format!("{function}\nasync fn seed_languages"),
@@ -277,18 +328,6 @@ pub fn generate_pages(opts: &PagesOptions) -> Result<PagesReport> {
             .push(format!("{}（菜单种子已在位）", seed_rs.display()));
     }
 
-    // 规格文件写回：group 落档；字段真相始终归 gen entity 所有，本命令
-    // 不改字段。
-    if spec_path.is_file() {
-        let mut file = match &spec.loaded_spec {
-            Some(file) => file.clone(),
-            None => crate::spec::load(&opts.repo_root, &spec.name)?,
-        };
-        file.group = Some(spec.group.clone());
-        crate::spec::save(&file, &opts.repo_root)?;
-        report.edited.push(spec_path);
-    }
-
     if spec.loaded_spec.is_some() {
         report.notes.push(format!(
             "字段清单取自规格文件 .rush/{}.json（--field 可省）",
@@ -318,7 +357,7 @@ pub fn generate_pages(opts: &PagesOptions) -> Result<PagesReport> {
 
 // ---- hooks 模板 ----
 
-fn ts_interface(spec: &PagesSpec) -> String {
+pub(crate) fn ts_interface(spec: &PagesSpec) -> String {
     let mut out = String::new();
     out.push_str("  id?: number;\n");
     if !spec.global_like() {
@@ -342,7 +381,7 @@ impl PagesSpec {
         false // v1: 页面生成仅面向租户实体（与 gen entity 的 --global 互为手动步骤）
     }
     /// 传输路径（无前导斜杠，与生成 TS 客户端一致）。
-    fn base_path(&self) -> String {
+    pub(crate) fn base_path(&self) -> String {
         self.route_prefix.trim_start_matches('/').to_owned()
     }
 }
@@ -1207,6 +1246,7 @@ mod tests {
                 },
             ],
             code_field: Some("code".to_owned()),
+            stack: PagesStack::React,
             loaded_spec: None,
         }
     }
@@ -1333,6 +1373,7 @@ mod tests {
                 kind: FieldKind::String,
             }],
             code_field: None,
+            stack: PagesStack::React,
             dry_run: true,
         };
         assert!(validate(&base()).is_ok(), "缺省 group = system");

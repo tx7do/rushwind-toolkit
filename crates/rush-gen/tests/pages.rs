@@ -75,6 +75,7 @@ fn opts(root: &Path) -> PagesOptions {
             },
         ],
         code_field: Some("code".to_owned()),
+        stack: rush_gen::pages::PagesStack::React,
         dry_run: false,
     }
 }
@@ -345,4 +346,114 @@ fn pages_without_fields_and_without_spec_fail_cleanly() {
     assert!(!root
         .join("frontend/admin/react/src/api/hooks/widget.ts")
         .exists());
+}
+
+// ---- vben / element 栈的集成测试 ----
+
+fn vben_opts(root: &Path) -> PagesOptions {
+    let mut opts = opts(root);
+    opts.stack = rush_gen::pages::PagesStack::Vben;
+    opts
+}
+
+fn element_opts(root: &Path) -> PagesOptions {
+    let mut opts = opts(root);
+    opts.stack = rush_gen::pages::PagesStack::Element;
+    opts
+}
+
+fn scaffold_vben(root: &Path) {
+    let app = root.join("frontend/admin/vue-vben/apps/admin");
+    fs::create_dir_all(app.join("src/views/app")).unwrap();
+    fs::write(app.join("package.json"), "{}").unwrap();
+}
+
+fn scaffold_element(root: &Path) {
+    let app = root.join("frontend/admin/vue-element");
+    fs::create_dir_all(app.join("src/pages/app")).unwrap();
+    fs::write(app.join("package.json"), "{}").unwrap();
+}
+
+#[test]
+fn vben_pages_create_route_module_and_files() {
+    let (_dir, root) = scaffold_admin();
+    scaffold_vben(&root);
+    let module =
+        root.join("frontend/admin/vue-vben/apps/admin/src/router/routes/modules/app/system.ts");
+
+    let report = pages::generate_pages(&vben_opts(&root)).unwrap();
+    let app = root.join("frontend/admin/vue-vben/apps/admin");
+    assert_eq!(report.created.len(), 4, "{report:#?}");
+    assert!(app.join("src/api/composables/widget.ts").exists());
+    assert!(app.join("src/views/app/system/widgets/index.vue").exists());
+    assert!(app
+        .join("src/views/app/system/widgets/widget-drawer.vue")
+        .exists());
+    assert!(module.exists(), "新分组整文件创建");
+
+    // 路由模块内容与 BOM
+    let module_text = fs::read_to_string(&module).unwrap();
+    assert!(module_text.starts_with('\u{FEFF}'), "vben 模块带 BOM");
+    assert!(module_text.contains("#/views/app/system/widgets/index.vue"));
+    assert!(module_text.contains("name: 'WidgetManagement',"));
+
+    // 幂等：路由条目已在位；但页面文件已存在 → 拒绝重跑（新实体换名）
+    assert!(pages::generate_pages(&vben_opts(&root)).is_err());
+}
+
+#[test]
+fn vben_pages_insert_child_into_existing_module() {
+    let (_dir, root) = scaffold_admin();
+    scaffold_vben(&root);
+    let module =
+        root.join("frontend/admin/vue-vben/apps/admin/src/router/routes/modules/app/system.ts");
+    fs::create_dir_all(module.parent().unwrap()).unwrap();
+    fs::write(
+        &module,
+        "import type { RouteRecordRaw } from 'vue-router';\n\nimport { BasicLayout } from '#/layouts';\n\nconst system: RouteRecordRaw[] = [\n  {\n    path: '/system',\n    children: [\n      {\n        path: 'user',\n        component: () => import('#/views/app/system/user/index.vue'),\n      },\n    ],\n  },\n];\n",
+    )
+    .unwrap();
+
+    let report = pages::generate_pages(&vben_opts(&root)).unwrap();
+    assert_eq!(report.edited, vec![module.clone()], "{report:#?}");
+    let text = fs::read_to_string(&module).unwrap();
+    let user_at = text.find("path: 'user',").unwrap();
+    let widget_at = text.find("path: 'widgets',").unwrap();
+    assert!(user_at < widget_at, "插到既有 children 尾部：{text}");
+    // BOM 不被破坏（原文无 BOM 则不添加）
+    assert!(text.starts_with("import type"));
+}
+
+#[test]
+fn element_pages_create_route_module_and_files() {
+    let (_dir, root) = scaffold_admin();
+    scaffold_element(&root);
+    let module = root.join("frontend/admin/vue-element/src/router/routes/modules/app/system.ts");
+
+    let report = pages::generate_pages(&element_opts(&root)).unwrap();
+    let app = root.join("frontend/admin/vue-element");
+    assert_eq!(report.created.len(), 4, "{report:#?}");
+    assert!(app.join("src/api/composables/widget.ts").exists());
+    let index = fs::read_to_string(app.join("src/pages/app/system/widgets/index.vue")).unwrap();
+    assert!(index.contains("ProPage ref=\"pageRef\""));
+    assert!(module.exists());
+
+    let module_text = fs::read_to_string(&module).unwrap();
+    assert!(!module_text.starts_with('\u{FEFF}'), "element 模块不带 BOM");
+    assert!(module_text.contains("@/pages/app/system/widgets/index.vue"));
+
+    let drawer =
+        fs::read_to_string(app.join("src/pages/app/system/widgets/widget-drawer.vue")).unwrap();
+    assert!(drawer.contains("formData.code = row.code ?? \"\";"));
+    assert!(pages::generate_pages(&element_opts(&root)).is_err());
+}
+
+#[test]
+fn vben_and_element_require_their_frontend_roots() {
+    let (_dir, root) = scaffold_admin();
+    let err = pages::generate_pages(&vben_opts(&root)).unwrap_err();
+    assert!(format!("{err}").contains("vue-vben"), "{err}");
+
+    let err = pages::generate_pages(&element_opts(&root)).unwrap_err();
+    assert!(format!("{err}").contains("vue-element"), "{err}");
 }

@@ -133,20 +133,37 @@ i32↔文本转换函数、`@default` 为未识别值回退。
 `--dry-run` 预览全部动作不落盘。已部署库的说明与 seed / testbed 等后续
 手动步骤见命令输出的提示。
 
-### `rush gen pages` —— React 前端 CRUD 页面组
+### `rush gen pages` —— 前端 CRUD 页面组（React / Vben / Element 三栈）
 
-为 `rush gen entity` 生成的实体配套生成 React 前端页面组（模板基准：仓内
-dict 页面模式）：
+为 `rush gen entity` 生成的实体配套生成前端页面组；`--stack` 选择目标栈
+（缺省 react）：
 
 ```shell
 # 字段从 .rush/widget.json 规格文件继承（gen entity 已落盘）
 rush gen pages widget
 
-# 或显式给出（与 gen entity 相同的语法；显式值优先于规格）
+# 三栈切换：react（缺省）/ vben / element
+rush gen pages widget --stack vben
+rush gen pages widget --stack element
+
+# 或显式给出字段（与 gen entity 相同的语法；显式值优先于规格）
 rush gen pages widget \
   --field code:string --field label:string \
   --field "state:enum(0=OFF,1=ON@default=ON)" --code-field code
 ```
+
+三栈的生成形状：
+
+- **react**：hooks + ProTable 列表 + DrawerForm 抽屉 + 双语 locale +
+  seed.rs 菜单种子（`seed_gen_menu_<name>`，按 path 幂等）；
+- **vben**：自包含 composables（vue-query + requestApi 直连）+ vxe-grid
+  列表（index.vue）+ useVbenForm 抽屉 + 前端静态路由模块
+  （`router/routes/modules/app/<group>.ts`，菜单=路由条目）；
+- **element**：自包含 composables + ProPage 配置式列表 + ProModal/ElForm
+  抽屉 + 静态路由模块。
+
+三个栈的模板都以仓内真实页链为基准（dict / language），生成后在对标的
+真实仓上过 vue-tsc / tsc 验证。
 
 生成物（都在 `frontend/admin/react/` 下）：
 
@@ -228,8 +245,10 @@ rushwind-toolkit/
       重命名）
 - [x] `rush testbed`：差分台架编排（构建/拉起/回放/回收，容器纪律：不碰
       docker）+ JSONL 报告离线摘要
-- [ ] 前端页面生成：Vben / Element / React 三栈的页面脚手架（优先对接
-      既有前端生成链，而非在 Rust 侧重写）
+- [x] 前端页面生成：React / Vben / Element 三栈的页面脚手架（模板基准
+      为各栈仓内 dict/language 页链；react 菜单走后端 seed，vben /
+      element 走前端静态路由模块；`--stack` 切换，已在对标的真实仓上以
+      vue-tsc / tsc 验证）
 
 ## 相关仓库
 
