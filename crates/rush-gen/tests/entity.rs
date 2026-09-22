@@ -65,6 +65,9 @@ fn opts(root: &Path) -> EntityOptions {
                 kind: FieldKind::Uint32,
             },
         ],
+        code_field: Some("code".to_owned()),
+        global: false,
+        check: false,
         dry_run: false,
         skip_manifest: true,
     }

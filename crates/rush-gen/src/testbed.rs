@@ -285,7 +285,11 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         assert!(endpoint_up(&format!("http://{addr}")));
-        assert!(!endpoint_up("http://127.0.0.1:9")); // discard 特权端口，通常关闭
+        // 先绑定后释放的端口 = 确定关闭（port 9 之类在部分平台不可靠）
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_port = closed.local_addr().unwrap().port();
+        drop(closed);
+        assert!(!endpoint_up(&format!("http://127.0.0.1:{closed_port}")));
         assert!(!endpoint_up("https://127.0.0.1:80"), "仅支持 http://");
         assert!(!endpoint_up("not-a-url"));
     }

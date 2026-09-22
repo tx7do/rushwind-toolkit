@@ -2,6 +2,10 @@
 
 # rushwind-toolkit
 
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.81+-DEA584?logo=rust)](https://www.rust-lang.org/)
+[![CI](https://github.com/tx7do/rushwind-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/tx7do/rushwind-toolkit/actions/workflows/ci.yml)
+
 [中文](./README.md) | **English** | [日本語](./README.ja-JP.md)
 
 </div>
@@ -58,7 +62,11 @@ mode that rebuilds the manifest requires the upstream checkout (at
 2. Strips the two sync gate steps (with their adjacent comment blocks)
    from `.github/workflows/ci.yml`;
 3. Keeps the upstream-drift baseline `react.UPSTREAM.sha256` by default
-   with a notice; `--prune-upstream-baseline` removes it.
+   with a notice; `--prune-upstream-baseline` removes it;
+4. Mechanically retires the two sync scripts by rewriting them as
+   refusing stubs (sync wipes the tree; `--check` treats legitimate
+   hand edits as tampering — both backwards downstream);
+   `--keep-sync-scripts` keeps the originals.
 
 Idempotent and re-runnable; `--dry-run` previews everything without
 writing; `--keep-gates` rebuilds manifests only and leaves CI alone
@@ -95,9 +103,28 @@ rushwind-admin (template baseline: the repo's smallest chain,
 dict_type) — one command, a compiling skeleton:
 
 ```shell
+# standard CRUD entity
 rush gen entity widget \
   --field code:string --field quantity:u32 --field is_active:bool
+
+# unique code (Get gains a code arm plus a /widgets/code/{code} binding)
+rush gen entity widget --field code:string --code-field code
+
+# platform-global table (the whole chain drops tenancy)
+rush gen entity setting --global --field key:string
+
+# enum field (proto enum -> text column, the house pattern)
+rush gen entity task --field state:enum(0=DRAFT,1=ACTIVE@default=ACTIVE)
+
+# verify with cargo check right after generation
+rush gen entity widget --field code:string --code-field code --check
 ```
+
+Field model: `string|i32|u32|bool|f64|enum(0=A,1=B@default=B)`. `--code-field`
+requires a string field. `--global` trims tenancy from the message, the
+entity, the repo (global arm) and the service. Enums follow the house
+pattern: a nested proto enum, a SeaORM text column, i32-to-text
+conversion helpers, with `@default` as the unrecognized-value fallback.
 
 What gets generated:
 
@@ -116,11 +143,11 @@ What gets generated:
   `server/rest.rs` (the use-import block + the mount table)
 - The proto MANIFEST rebuilds automatically (`--skip-manifest` to skip)
 
-Field types are `string|i32|u32|bool|f64`; the standard columns (id /
-tenant_id / sort_order / auditor and timestamp triplets) ride along
-automatically. `cargo check` goes green right after generation (verified
-against the real rushwind-admin with a gizmo entity); follow up with
-`cargo fmt`.
+The standard columns (id / sort_order / auditor and timestamp triplets;
+tenant_id on tenanted tables) ride along automatically. `cargo check`
+goes green right after generation (verified against the real
+rushwind-admin with three entities — code arm, global+enum, and all
+three combined — zero warnings); follow up with `cargo fmt`.
 
 `--dry-run` previews every action without writing. Notes about deployed
 databases and the manual follow-ups (seed / frontend / testbed) appear

@@ -2,6 +2,10 @@
 
 # rushwind-toolkit
 
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.81+-DEA584?logo=rust)](https://www.rust-lang.org/)
+[![CI](https://github.com/tx7do/rushwind-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/tx7do/rushwind-toolkit/actions/workflows/ci.yml)
+
 [中文](./README.md) | [English](./README.en-US.md) | **日本語**
 
 </div>
@@ -55,7 +59,10 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
 2. `.github/workflows/ci.yml` から 2 つの同期ゲートステップ（直前のコメン
    トブロックごと）を剥離；
 3. 上流ドリフト基準 `react.UPSTREAM.sha256` はデフォルトで保持してお知らせ
-   し、`--prune-upstream-baseline` で削除。
+   し、`--prune-upstream-baseline` で削除；
+4. 2 つの sync スクリプトを**機械的に廃止**：実行拒否スタブに書き換えます
+   （sync はツリーを上書きし、--check は正規の手修正を改ざんと見なす——ど
+   ちらも下流には逆の意味論）。`--keep-sync-scripts` で原本を保持。
 
 冪等で再実行可能。`--dry-run` は何も書き込まず全工程をプレビュー。
 `--keep-gates` はマニフェストのみ再構築し CI はそのまま（上流を追い続けた
@@ -91,9 +98,29 @@ rush manifest proto             # デフォルトは検証のみ（読み取り�
 ン）。コマンド一発でコンパイルの通るスケルトンが手に入ります：
 
 ```shell
+# 標準 CRUD エンティティ
 rush gen entity widget \
   --field code:string --field quantity:u32 --field is_active:bool
+
+# 一意コード付き（Get に code アームと /widgets/code/{code} 追加バインドが付く）
+rush gen entity widget --field code:string --code-field code
+
+# プラットフォーム全体テーブル（チェーン全体からテナンシーを除去）
+rush gen entity setting --global --field key:string
+
+# 列挙フィールド（proto enum → テキスト列、リポジトリの標準パターン）
+rush gen entity task --field state:enum(0=DRAFT,1=ACTIVE@default=ACTIVE)
+
+# 生成後に cargo check で検証
+rush gen entity widget --field code:string --code-field code --check
 ```
+
+フィールドモデル：`string|i32|u32|bool|f64|enum(0=A,1=B@default=B)`。
+`--code-field` は string 型フィールドを要求します。`--global` はメッセージ・
+エンティティ・repo（global アーム）・service からテナンシーを取り除きま
+す。列挙はリポジトリの標準パターンに従います：メッセージ内のネストされた
+enum、SeaORM テキスト列、i32↔テキスト変換ヘルパー、`@default` は未識別値の
+フォールバックです。
 
 生成物：
 
@@ -112,10 +139,10 @@ rush gen entity widget \
   ブロック + マウントテーブル）
 - proto MANIFEST を自動再構築（`--skip-manifest` でスキップ）
 
-フィールド型は `string|i32|u32|bool|f64`。標準カラム（id / tenant_id /
-sort_order / 監査者とタイムスタンプ）は自動で付きます。生成後の
-`cargo check` はそのままグリーン（実際の rushwind-admin で gizmo エンティ
-ティにより検証済み）。続けて `cargo fmt` を推奨。
+標準カラム（id / sort_order / 監査者とタイムスタンプ。テナント表には
+tenant_id）は自動で付きます。生成後の `cargo check` はそのままグリーン（実
+際の rushwind-admin で 3 エンティティ——code アーム、グローバル+列挙、両方
+の組み合わせ——により警告ゼロで検証済み）。続けて `cargo fmt` を推奨。
 
 `--dry-run` は書き込まずに全アクションをプレビュー。既存 DB への注意や
 seed / フロントエンド / testbed など後続の手動ステップはコマンド出力の注記

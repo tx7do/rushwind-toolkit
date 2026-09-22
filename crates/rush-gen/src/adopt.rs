@@ -34,7 +34,25 @@ pub struct AdoptOptions {
     pub skip_react: bool,
     /// 删除上游漂移基线 `react.UPSTREAM.sha256`。
     pub prune_upstream_baseline: bool,
+    /// 保留 sync-*.sh 原脚本（默认机制性退役：改写为拒跑 stub）。
+    pub keep_sync_scripts: bool,
 }
+
+/// 退役 stub：拒跑 + 指引 rush manifest rebuild。保留原脚本时不用。
+const RETIRED_SCRIPT: &str = r#"#!/usr/bin/env bash
+# 已由 rush adopt 机制性退役：本仓已从「上游镜像」切换为「下游自有仓」。
+#
+# 原脚本对下游是反向语义——sync 要求持有上游仓且会整树覆盖（rm -rf 后重拷），
+# --check 会把合法的手改当篡改。清单维护请改用：
+#
+#   rush manifest proto --rebuild   # backend/api 契约面
+#   rush manifest react --rebuild   # frontend/admin/react 快照面
+#
+echo "refusing: this repo has been adopted (downstream-owned); use 'rush manifest <proto|react> --rebuild'" >&2
+exit 1
+"#;
+
+const RETIRED_MARKER: &str = "已由 rush adopt 机制性退役";
 
 /// `react.UPSTREAM.sha256` 的处置结果。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -61,6 +79,8 @@ pub struct AdoptReport {
     pub ci_gates_already_absent: bool,
     /// `.github/workflows/ci.yml` 不存在。
     pub ci_missing: bool,
+    /// 已退役（改写为拒跑 stub）的 sync 脚本。
+    pub retired_scripts: Vec<String>,
     pub upstream_baseline: UpstreamBaseline,
 }
 
@@ -118,6 +138,25 @@ pub fn adopt(opts: &AdoptOptions) -> Result<AdoptReport> {
                     fs::write(&ci, &stripped)?;
                 }
             }
+        }
+    }
+
+    // sync 脚本机制性退役：改写为拒跑 stub（防误运行——sync 会整树覆盖，
+    // --check 会把手改当篡改，对下游都是反向语义）。
+    if !opts.keep_sync_scripts {
+        for script in ["backend/api/sync-protos.sh", "frontend/admin/sync-react.sh"] {
+            let path = root.join(script);
+            if !path.is_file() {
+                continue;
+            }
+            let text = fs::read_to_string(&path)?;
+            if text.contains(RETIRED_MARKER) {
+                continue;
+            }
+            if !opts.dry_run {
+                fs::write(&path, RETIRED_SCRIPT)?;
+            }
+            report.retired_scripts.push(script.to_owned());
         }
     }
 

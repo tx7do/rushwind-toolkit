@@ -48,6 +48,9 @@ enum Commands {
         /// 顺带删除上游漂移基线 react.UPSTREAM.sha256
         #[arg(long)]
         prune_upstream_baseline: bool,
+        /// 保留 sync-*.sh 原脚本（默认机制性退役为拒跑 stub）
+        #[arg(long)]
+        keep_sync_scripts: bool,
     },
     /// 校验或重建某个同步面的 sha256 清单（默认校验）
     Manifest {
@@ -149,9 +152,20 @@ enum GenTarget {
         /// 路由前缀（缺省 /admin/v1/<复数>）
         #[arg(long)]
         route_prefix: Option<String>,
-        /// 业务字段，格式 name:kind，kind ∈ string|i32|u32|bool|f64；可重复
+        /// 业务字段，格式 name:kind，kind ∈ string|i32|u32|bool|f64 或
+        /// enum(0=A,1=B@default=B)；可重复
         #[arg(long = "field", value_name = "NAME:KIND")]
         fields: Vec<String>,
+        /// 唯一编码字段（须为 string 字段）：启用 Get 的 code 臂与
+        /// /code/{code} 附加路由
+        #[arg(long, value_name = "FIELD")]
+        code_field: Option<String>,
+        /// 平台全局表：全链去租户
+        #[arg(long)]
+        global: bool,
+        /// 生成后执行 cargo check -p admin-api 验证
+        #[arg(long)]
+        check: bool,
         /// 只报告不落盘
         #[arg(long)]
         dry_run: bool,
@@ -198,6 +212,7 @@ fn run(cli: Cli) -> Result<()> {
             skip_proto,
             skip_react,
             prune_upstream_baseline,
+            keep_sync_scripts,
         } => {
             if skip_proto && skip_react && keep_gates {
                 bail!("--skip-proto + --skip-react + --keep-gates 没有任何可执行的动作");
@@ -209,6 +224,7 @@ fn run(cli: Cli) -> Result<()> {
                 skip_proto,
                 skip_react,
                 prune_upstream_baseline,
+                keep_sync_scripts,
             };
             let report = adopt::adopt(&opts).context("adopt 失败")?;
             render_adopt(&report, dry_run);
@@ -314,6 +330,9 @@ fn run(cli: Cli) -> Result<()> {
                     package,
                     route_prefix,
                     fields,
+                    code_field,
+                    global,
+                    check,
                     dry_run,
                     skip_manifest,
                 },
@@ -321,10 +340,10 @@ fn run(cli: Cli) -> Result<()> {
             let mut parsed = Vec::with_capacity(fields.len());
             for spec in &fields {
                 let Some((fname, kind)) = spec.rsplit_once(':') else {
-                    bail!("字段格式应为 name:kind（如 code:string）：{spec}");
+                    bail!("字段格式应为 name:kind（如 code:string 或 status:enum(0=A,1=B@default=B)）：{spec}");
                 };
                 let Some(kind) = FieldKind::parse(kind) else {
-                    bail!("未知字段类型 {kind}（支持 string|i32|u32|bool|f64）：{spec}");
+                    bail!("未知字段类型 {kind}（支持 string|i32|u32|bool|f64 或 enum(0=A,1=B@default=B)）：{spec}");
                 };
                 parsed.push(FieldSpec {
                     name: fname.to_owned(),
@@ -338,6 +357,9 @@ fn run(cli: Cli) -> Result<()> {
                 package,
                 route_prefix,
                 fields: parsed,
+                code_field,
+                global,
+                check,
                 dry_run,
                 skip_manifest,
             };
@@ -420,6 +442,11 @@ fn render_gen(report: &entity::EntityReport, dry_run: bool) {
     if let Some(count) = report.manifest_entries {
         println!("{tag}proto MANIFEST：{count} 条");
     }
+    match report.check_passed {
+        Some(true) => println!("{tag}cargo check -p admin-api：通过"),
+        Some(false) => println!("{tag}cargo check -p admin-api：未通过（见注意）"),
+        None => {}
+    }
     if !report.notes.is_empty() {
         println!();
         for note in &report.notes {
@@ -451,6 +478,11 @@ fn render_adopt(report: &adopt::AdoptReport, dry_run: bool) {
         }
     } else if report.ci_gates_already_absent {
         println!("CI 中未发现同步门禁步（可能已接管过）");
+    }
+    if !report.retired_scripts.is_empty() {
+        for script in &report.retired_scripts {
+            println!("{tag}已退役 sync 脚本（改写为拒跑 stub）：{script}");
+        }
     }
     println!();
     println!("提示：sync-*.sh 已不再被 CI 调用。下游日常请用 `rush manifest <proto|react> --rebuild` 重建清单；");

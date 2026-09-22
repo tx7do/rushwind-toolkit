@@ -42,6 +42,18 @@ fn scaffold_repo() -> (TempDir, std::path::PathBuf) {
     fs::create_dir_all(&workflows).unwrap();
     fs::write(workflows.join("ci.yml"), CI_FIXTURE).unwrap();
 
+    // sync 脚本（退役对象）
+    fs::write(
+        root.join("backend/api/sync-protos.sh"),
+        b"#!/usr/bin/env bash\n# original proto sync\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("frontend/admin/sync-react.sh"),
+        b"#!/usr/bin/env bash\n# original react sync\n",
+    )
+    .unwrap();
+
     (dir, root)
 }
 
@@ -53,6 +65,7 @@ fn opts(root: &Path) -> AdoptOptions {
         skip_proto: false,
         skip_react: false,
         prune_upstream_baseline: false,
+        keep_sync_scripts: false,
     }
 }
 
@@ -75,10 +88,19 @@ fn adopt_rebuilds_manifests_and_strips_ci_gates() {
     assert!(!ci.contains("sync-react"));
     assert!(ci.contains("- name: Format"));
 
-    // 幂等：二次执行不再有门禁可剥，清单重建结果一致
+    // sync 脚本机制性退役：改写为拒跑 stub
+    assert_eq!(report.retired_scripts.len(), 2);
+    for script in ["backend/api/sync-protos.sh", "frontend/admin/sync-react.sh"] {
+        let text = fs::read_to_string(root.join(script)).unwrap();
+        assert!(text.contains("refusing"), "{script} 应为拒跑 stub");
+        assert!(text.contains("rush manifest"));
+    }
+
+    // 幂等：二次执行不再有门禁可剥，清单重建结果一致，脚本已是 stub 不再改写
     let report2 = adopt::adopt(&opts(&root)).unwrap();
     assert!(report2.removed_ci_steps.is_empty());
     assert!(report2.ci_gates_already_absent);
+    assert!(report2.retired_scripts.is_empty());
 }
 
 #[test]
@@ -92,11 +114,22 @@ fn adopt_dry_run_writes_nothing() {
 
     assert_eq!(report.proto_entries, Some(1));
     assert_eq!(report.removed_ci_steps.len(), 2, "报告里仍列出将要剥离的步");
+    assert_eq!(
+        report.retired_scripts.len(),
+        2,
+        "报告里仍列出将要退役的脚本"
+    );
     assert!(!root.join("backend/api/MANIFEST.sha256").exists());
     assert!(!root.join("frontend/admin/react.MANIFEST.sha256").exists());
     assert_eq!(
         fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap(),
         ci_before
+    );
+    assert!(
+        fs::read_to_string(root.join("backend/api/sync-protos.sh"))
+            .unwrap()
+            .contains("original proto sync"),
+        "dry-run 不改写脚本"
     );
 }
 
@@ -114,6 +147,23 @@ fn adopt_keep_gates_only_rebuilds_manifests() {
     assert_eq!(
         fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap(),
         ci_before
+    );
+}
+
+#[test]
+fn adopt_keep_sync_scripts_leaves_them_alone() {
+    let (_dir, root) = scaffold_repo();
+
+    let mut options = opts(&root);
+    options.keep_sync_scripts = true;
+    let report = adopt::adopt(&options).unwrap();
+
+    assert!(report.retired_scripts.is_empty());
+    assert!(
+        fs::read_to_string(root.join("backend/api/sync-protos.sh"))
+            .unwrap()
+            .contains("original proto sync"),
+        "保留模式下脚本原样"
     );
 }
 

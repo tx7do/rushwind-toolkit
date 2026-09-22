@@ -13,12 +13,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::manifest::Flavor;
 use crate::{manifest, Error, Result};
 
 /// 业务字段类型（`--field name:kind` 的 kind）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
     /// proto `string`，实体非空 `String`。
     String,
@@ -30,34 +31,90 @@ pub enum FieldKind {
     Bool,
     /// proto `double`，实体可空 `Option<f64>`。
     Float64,
+    /// 文本列枚举（仓内模式，见 data.rs "Enum columns carry the enum
+    /// names as text"：proto enum → prost 按 i32 匹配 → 文本列）。
+    Enum(EnumValues),
+}
+
+/// 枚举字段的取值集：`(数值, 文本)` 有序列表（必须含 0）+ 未识别回退文本。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumValues {
+    pub values: Vec<(i32, String)>,
+    pub default: String,
+}
+
+fn is_upper_snake(s: &str) -> bool {
+    let mut cs = s.chars();
+    let first_ok = cs.next().is_some_and(|c| c.is_ascii_uppercase());
+    first_ok
+        && s.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 impl FieldKind {
-    /// 解析 `--field name:kind` 的 kind 段（含常用别名）。
+    /// 解析 `--field name:kind` 的 kind 段。标量含常用别名；枚举语法为
+    /// `enum(0=A,1=B@default=B)`（必须含 0 值项；@default 是未识别值的
+    /// 回退文本，缺省取 0 值文本）。
     pub fn parse(kind: &str) -> Option<Self> {
         match kind {
-            "string" => Some(Self::String),
-            "i32" | "int" => Some(Self::Int32),
-            "u32" | "uint" => Some(Self::Uint32),
-            "bool" => Some(Self::Bool),
-            "f64" | "float" => Some(Self::Float64),
-            _ => None,
+            "string" => return Some(Self::String),
+            "i32" | "int" => return Some(Self::Int32),
+            "u32" | "uint" => return Some(Self::Uint32),
+            "bool" => return Some(Self::Bool),
+            "f64" | "float" => return Some(Self::Float64),
+            _ => {}
+        }
+        let rest = kind.strip_prefix("enum(")?;
+        let inner = rest.strip_suffix(')')?;
+        let (inner, explicit_default) = match inner.split_once("@default=") {
+            Some((head, text)) if is_upper_snake(text) => (head, Some(text.to_owned())),
+            Some(_) => return None,
+            None => (inner, None),
+        };
+        let mut values: Vec<(i32, String)> = Vec::new();
+        for entry in inner.split(',') {
+            let (num, text) = entry.split_once('=')?;
+            let num: i32 = num.trim().parse().ok()?;
+            let text = text.trim().to_owned();
+            if !is_upper_snake(&text) || values.iter().any(|(seen, _)| *seen == num) {
+                return None;
+            }
+            values.push((num, text));
+        }
+        if values.is_empty() || !values.iter().any(|(num, _)| *num == 0) {
+            return None;
+        }
+        let zero_text = values
+            .iter()
+            .find(|(num, _)| *num == 0)
+            .expect("已校验含 0")
+            .1
+            .clone();
+        if values.iter().filter(|(_, text)| *text == zero_text).count() > 1 {
+            return None;
+        }
+        let default = explicit_default.unwrap_or(zero_text);
+        if !values.iter().any(|(_, text)| *text == default) {
+            return None;
+        }
+        Some(Self::Enum(EnumValues { values, default }))
+    }
+
+    /// proto 字段类型（枚举字段的类型名 = 字段名的 Pascal 形）。
+    fn proto_ty(kind: &Self, field_name: &str) -> String {
+        match kind {
+            Self::String => "string".to_owned(),
+            Self::Int32 => "int32".to_owned(),
+            Self::Uint32 => "uint32".to_owned(),
+            Self::Bool => "bool".to_owned(),
+            Self::Float64 => "double".to_owned(),
+            Self::Enum(_) => pascal_of(field_name),
         }
     }
 
-    fn proto_ty(self) -> &'static str {
+    fn entity_ty(&self) -> &'static str {
         match self {
-            Self::String => "string",
-            Self::Int32 => "int32",
-            Self::Uint32 => "uint32",
-            Self::Bool => "bool",
-            Self::Float64 => "double",
-        }
-    }
-
-    fn entity_ty(self) -> &'static str {
-        match self {
-            Self::String => "String",
+            Self::String | Self::Enum(_) => "String",
             Self::Int32 => "i32",
             Self::Uint32 => "u32",
             Self::Bool => "bool",
@@ -88,6 +145,13 @@ pub struct EntityOptions {
     pub route_prefix: Option<String>,
     /// 业务字段。
     pub fields: Vec<FieldSpec>,
+    /// 唯一编码字段名（须在 fields 中且为 string）：启用 Get 的 code 臂与
+    /// `/code/{code}` 附加路由（dict_type 同款）。
+    pub code_field: Option<String>,
+    /// 平台全局表：全链去租户（无 tenant 列/过滤，repo 走 global 臂）。
+    pub global: bool,
+    /// 生成后执行 `cargo check -p admin-api` 验证。
+    pub check: bool,
     /// 只报告不落盘。
     pub dry_run: bool,
     /// 跳过 proto MANIFEST 重建。
@@ -101,6 +165,8 @@ pub struct EntityReport {
     pub edited: Vec<PathBuf>,
     pub skipped: Vec<String>,
     pub manifest_entries: Option<usize>,
+    /// `--check` 的结果：None 未请求；Some(true) 编译通过。
+    pub check_passed: Option<bool>,
     pub notes: Vec<String>,
 }
 
@@ -114,6 +180,8 @@ struct EntitySpec {
     proto_dir: String,
     route_prefix: String,
     fields: Vec<FieldSpec>,
+    code_field: Option<String>,
+    global: bool,
 }
 
 fn pascal_of(snake: &str) -> String {
@@ -187,6 +255,24 @@ fn validate(opts: &EntityOptions) -> Result<EntitySpec> {
             return Err(Error::InvalidInput(format!("字段重复：{}", field.name)));
         }
     }
+    let code_field = match &opts.code_field {
+        Some(code_name) => {
+            let field = opts
+                .fields
+                .iter()
+                .find(|field| &field.name == code_name)
+                .ok_or_else(|| {
+                    Error::InvalidInput(format!("--code-field 不在字段列表中：{code_name}"))
+                })?;
+            if field.kind != FieldKind::String {
+                return Err(Error::InvalidInput(format!(
+                    "--code-field 必须是 string 类型：{code_name}"
+                )));
+            }
+            Some(code_name.clone())
+        }
+        None => None,
+    };
     let plural = plural_of(&opts.name);
     let table = match &opts.table {
         Some(t) if !t.is_empty() => t.clone(),
@@ -218,6 +304,8 @@ fn validate(opts: &EntityOptions) -> Result<EntitySpec> {
         proto_dir,
         route_prefix,
         fields: opts.fields.clone(),
+        code_field,
+        global: opts.global,
     })
 }
 
@@ -418,6 +506,29 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
         let tree = Flavor::Proto.tree_path(root);
         let path = Flavor::Proto.manifest_path(root);
         report.manifest_entries = Some(manifest::rebuild(&tree, &path, Flavor::Proto)?);
+    }
+
+    if opts.check {
+        let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+            .args(["check", "-q", "-p", "admin-api"])
+            .current_dir(root.join("backend"))
+            .status();
+        match status {
+            Ok(status) if status.success() => report.check_passed = Some(true),
+            Ok(status) => {
+                report.check_passed = Some(false);
+                report.notes.push(format!(
+                    "--check：cargo check 退出码 {:?}——生成物未通过编译，请核对错误输出",
+                    status.code()
+                ));
+            }
+            Err(err) => {
+                report.check_passed = Some(false);
+                report
+                    .notes
+                    .push(format!("--check：cargo 不可用，跳过编译验证（{err}）"));
+            }
+        }
     }
 
     report.notes.push(
@@ -649,14 +760,42 @@ fn first_greater_import_byte(line: &str, service: &str) -> Option<usize> {
 
 // ---- 模板 ----
 
-fn proto_field(name: &str, kind: FieldKind, num: u32) -> String {
+fn proto_field_row(ty: &str, name: &str, num: u32) -> String {
     format!(
         "  optional {ty} {name} = {num} [\n    json_name = \"{json}\",\n    (gnostic.openapi.v3.property) = {{description: \"{name}\"}}\n  ]; // {name}\n",
-        ty = kind.proto_ty(),
+        ty = ty,
         name = name,
         num = num,
         json = camel_of(name),
     )
+}
+
+fn proto_field(field: &FieldSpec, num: u32) -> String {
+    proto_field_row(
+        &FieldKind::proto_ty(&field.kind, &field.name),
+        &field.name,
+        num,
+    )
+}
+
+/// 消息体内的嵌套 enum 块（每个枚举字段一个，置于字段声明之前）。
+fn proto_enums(spec: &EntitySpec) -> String {
+    let mut out = String::new();
+    for field in &spec.fields {
+        if let FieldKind::Enum(values) = &field.kind {
+            out.push_str(&format!(
+                "  // {} 取值集（文本列枚举：{}）\n  enum {} {{\n",
+                field.name,
+                values.default,
+                pascal_of(&field.name)
+            ));
+            for (num, text) in &values.values {
+                out.push_str(&format!("    {text} = {num};\n"));
+            }
+            out.push_str("  }\n\n");
+        }
+    }
+    out
 }
 
 fn message_proto(spec: &EntitySpec) -> String {
@@ -666,12 +805,13 @@ fn message_proto(spec: &EntitySpec) -> String {
     );
     let mut num = 2u32;
     for field in &spec.fields {
-        fields.push_str(&proto_field(&field.name, field.kind, num));
+        fields.push_str(&proto_field(field, num));
         fields.push('\n');
         num += 1;
     }
-    // 标准尾段字段：None 表示 google.protobuf.Timestamp（不用 FieldKind 表达）
-    for (name, kind) in [
+    // 标准尾段字段：None 表示 google.protobuf.Timestamp（不用 FieldKind 表达）；
+    // 全局表无租户两列。
+    let tail: [(&str, Option<FieldKind>); 9] = [
         ("sort_order", Some(FieldKind::Uint32)),
         ("tenant_id", Some(FieldKind::Uint32)),
         ("tenant_name", Some(FieldKind::String)),
@@ -681,9 +821,13 @@ fn message_proto(spec: &EntitySpec) -> String {
         ("created_at", None),
         ("updated_at", None),
         ("deleted_at", None),
-    ] {
+    ];
+    for (name, kind) in tail {
+        if spec.global && (name == "tenant_id" || name == "tenant_name") {
+            continue;
+        }
         let block = match kind {
-            Some(kind) => proto_field(name, kind, num),
+            Some(kind) => proto_field_row(&FieldKind::proto_ty(&kind, name), name, num),
             None => format!(
                 "  optional google.protobuf.Timestamp {name} = {num} [json_name = \"{json}\", (gnostic.openapi.v3.property) = {{description: \"{name}\"}}]; // {name}\n",
                 name = name,
@@ -695,6 +839,11 @@ fn message_proto(spec: &EntitySpec) -> String {
         fields.push('\n');
         num += 1;
     }
+    let code_arm = if spec.code_field.is_some() {
+        "    string code = 2;\n"
+    } else {
+        ""
+    };
 
     format!(
         r#"syntax = "proto3";
@@ -726,7 +875,7 @@ service {pascal}Service {{
 
 // {pascal}
 message {pascal} {{
-{fields}}}
+{enums}{fields}}}
 
 // 查询{pascal}列表 - 回应
 message List{pascal}Response {{
@@ -738,7 +887,7 @@ message List{pascal}Response {{
 message Get{pascal}Request {{
   oneof query_by {{
     uint32 id = 1;
-  }}
+{code_arm}  }}
 
   optional google.protobuf.FieldMask view_mask = 100 [
     json_name = "viewMask",
@@ -784,11 +933,21 @@ message Count{pascal}Response {{
         package = spec.package,
         pascal = spec.pascal,
         name = spec.name,
+        enums = proto_enums(spec),
         fields = fields,
+        code_arm = code_arm,
     )
 }
 
 fn admin_proto(spec: &EntitySpec) -> String {
+    let get_bindings = if spec.code_field.is_some() {
+        format!(
+            "      additional_bindings {{\n        get: \"{}/code/{{code}}\"\n      }}\n",
+            spec.route_prefix
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"syntax = "proto3";
 
@@ -813,7 +972,7 @@ service {pascal}Service {{
   rpc Get ({pkg}.Get{pascal}Request) returns ({pkg}.{pascal}) {{
     option (google.api.http) = {{
       get: "{route_prefix}/{{id}}"
-    }};
+{get_bindings}    }};
   }}
 
   // 创建{pascal}
@@ -845,12 +1004,21 @@ service {pascal}Service {{
         pascal = spec.pascal,
         pkg = spec.package,
         route_prefix = spec.route_prefix,
+        get_bindings = get_bindings,
     )
 }
 
 fn entity_fields(spec: &EntitySpec) -> String {
     let mut out = String::new();
     for field in &spec.fields {
+        if let FieldKind::Enum(values) = &field.kind {
+            let texts: Vec<String> = values.values.iter().map(|(_, text)| text.clone()).collect();
+            out.push_str(&format!(
+                "    /// enum({}) default {}.\n",
+                texts.join(","),
+                values.default
+            ));
+        }
         if field.kind == FieldKind::String {
             out.push_str(&format!("        pub {}: String,\n", field.name));
         } else {
@@ -865,6 +1033,11 @@ fn entity_fields(spec: &EntitySpec) -> String {
 }
 
 fn entity_file(spec: &EntitySpec) -> String {
+    let tenant_line = if spec.global {
+        ""
+    } else {
+        "    pub tenant_id: Option<u32>,\n"
+    };
     format!(
         r#"//! {table} — 由 rush gen entity 生成的实体模块。
 
@@ -875,8 +1048,7 @@ use sea_orm::entity::prelude::*;
 pub struct Model {{
     #[sea_orm(primary_key)]
     pub id: u32,
-    pub tenant_id: Option<u32>,
-{business}    #[sea_orm(default_value = 0)]
+{tenant_line}{business}    #[sea_orm(default_value = 0)]
     pub sort_order: Option<u32>,
     pub created_by: Option<u32>,
     pub updated_by: Option<u32>,
@@ -892,72 +1064,140 @@ pub enum Relation {{}}
 impl ActiveModelBehavior for ActiveModel {{}}
 "#,
         table = spec.table,
+        tenant_line = tenant_line,
         business = entity_fields(spec),
     )
 }
 
 fn repo_file(spec: &EntitySpec) -> String {
+    let (shell_arm, viewer_import, delete_body) = if spec.global {
+        (
+            "global",
+            "",
+            "        let delete =\n            entity::Entity::delete_many()\n                .filter(entity::Column::Id.is_in(ids.to_vec()));\n        delete.exec(self.db).await.map_err(db_err)?;\n        Ok(())\n",
+        )
+    } else {
+        (
+            "tenant",
+            "use crate::data::Viewer;\n",
+            "        let mut delete = entity::Entity::delete_many()\n            .filter(entity::Column::Id.is_in(ids.to_vec()));\n        if let Some(tid) = self.viewer.tenant_scope() {\n            delete = delete.filter(entity::Column::TenantId.eq(tid));\n        }\n        delete.exec(self.db).await.map_err(db_err)?;\n        Ok(())\n",
+        )
+    };
     format!(
-        r#"//! {pascal}Repo — tenant-scoped queries with
+        r#"//! {pascal}Repo — queries with
 //! all predicates owned here (never ad-hoc in services).
 
 use sea_orm::sea_query::Condition;
 use sea_orm::{{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter}};
 
 use crate::data::{table} as entity;
-use crate::data::Viewer;
-use crate::state::{{db_err, StatusError}};
+{viewer_import}use crate::state::{{db_err, StatusError}};
 
-repo_shell!(tenant {pascal}Repo, entity);
+repo_shell!({shell_arm} {pascal}Repo, entity);
 
 impl<'a> {pascal}Repo<'a> {{
-    /// Delete = BatchDelete semantics, tenant-scoped.
+    /// Delete = BatchDelete semantics.
     pub async fn delete_batch(&self, ids: &[u32]) -> Result<(), StatusError> {{
-        let mut delete = entity::Entity::delete_many()
-            .filter(entity::Column::Id.is_in(ids.to_vec()));
-        if let Some(tid) = self.viewer.tenant_scope() {{
-            delete = delete.filter(entity::Column::TenantId.eq(tid));
-        }}
-        delete.exec(self.db).await.map_err(db_err)?;
-        Ok(())
-    }}
+{delete_body}    }}
 }}
 "#,
         pascal = spec.pascal,
         table = spec.table,
+        shell_arm = shell_arm,
+        viewer_import = viewer_import,
+        delete_body = delete_body,
     )
 }
 
+/// 每个枚举字段一对转换函数（proto i32 ↔ 文本列），置于 mapper 之前。
+fn enum_helpers(spec: &EntitySpec) -> String {
+    let mut out = String::new();
+    for field in &spec.fields {
+        if let FieldKind::Enum(values) = &field.kind {
+            let snake = field.name.clone();
+            out.push_str(&format!(
+                "fn {snake}_to_text(v: i32) -> String {{\n    match v {{\n"
+            ));
+            for (num, text) in &values.values {
+                out.push_str(&format!("        {num} => \"{text}\".to_string(),\n"));
+            }
+            out.push_str(&format!(
+                "        _ => \"{}\".to_string(),\n    }}\n}}\n\n",
+                values.default
+            ));
+            out.push_str(&format!(
+                "fn {snake}_from_text(value: Option<&str>) -> i32 {{\n    match value {{\n"
+            ));
+            for (num, text) in &values.values {
+                if *num != 0 {
+                    out.push_str(&format!("        Some(\"{text}\") => {num},\n"));
+                }
+            }
+            out.push_str("        _ => 0,\n    }\n}\n\n");
+        }
+    }
+    out
+}
+
 fn mapper_fields(spec: &EntitySpec) -> String {
-    spec.fields
-        .iter()
-        .map(|field| match field.kind {
-            FieldKind::String => format!("        {}: Some(r.{}),\n", field.name, field.name),
-            _ => format!("        {}: r.{},\n", field.name, field.name),
-        })
-        .collect()
+    let mut out = String::new();
+    for field in &spec.fields {
+        match &field.kind {
+            FieldKind::String => {
+                out.push_str(&format!(
+                    "        {}: Some(r.{}),\n",
+                    field.name, field.name
+                ));
+            }
+            FieldKind::Enum(_) => {
+                out.push_str(&format!(
+                    "        {}: Some({}_from_text(r.{}.as_deref())),\n",
+                    field.name, field.name, field.name
+                ));
+            }
+            _ => {
+                out.push_str(&format!("        {}: r.{},\n", field.name, field.name));
+            }
+        }
+    }
+    out
 }
 
 fn create_fields(spec: &EntitySpec) -> String {
-    spec.fields
-        .iter()
-        .map(|field| match field.kind {
-            FieldKind::String => format!(
+    let mut out = String::new();
+    if !spec.global {
+        out.push_str("            tenant_id: Set(Some(payload.tenant_id)),\n");
+    }
+    for field in &spec.fields {
+        match &field.kind {
+            FieldKind::String => out.push_str(&format!(
                 "            {}: Set(data.{}.unwrap_or_default()),\n",
                 field.name, field.name
-            ),
-            _ => format!("            {}: Set(data.{}),\n", field.name, field.name),
-        })
-        .collect()
+            )),
+            FieldKind::Enum(_) => out.push_str(&format!(
+                "            {}: Set(Some({}_to_text(data.{}.unwrap_or(0)))),\n",
+                field.name, field.name, field.name
+            )),
+            _ => out.push_str(&format!(
+                "            {}: Set(data.{}),\n",
+                field.name, field.name
+            )),
+        }
+    }
+    out
 }
 
 fn update_fields(spec: &EntitySpec) -> String {
     spec.fields
         .iter()
-        .map(|field| match field.kind {
+        .map(|field| match &field.kind {
             FieldKind::String => format!(
                 "            if let Some(v) = &data.{} {{\n                a.{} = Set(v.clone());\n            }}\n",
                 field.name, field.name
+            ),
+            FieldKind::Enum(_) => format!(
+                "            if let Some(v) = data.{} {{\n                a.{} = Set(Some({}_to_text(v)));\n            }}\n",
+                field.name, field.name, field.name
             ),
             _ => format!(
                 "            if let Some(v) = data.{} {{\n                a.{} = Set(Some(v));\n            }}\n",
@@ -968,17 +1208,133 @@ fn update_fields(spec: &EntitySpec) -> String {
 }
 
 fn service_file(spec: &EntitySpec) -> String {
+    let has_code = spec.code_field.is_some();
+    // sea_orm 导入按实际使用面裁剪（全局表无租户过滤时不引 ColumnTrait/QueryFilter）
+    let sea_imports = if has_code {
+        "use sea_orm::sea_query::Condition;\nuse sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};"
+    } else if spec.global {
+        "use sea_orm::{ActiveModelTrait, EntityTrait, Set};"
+    } else {
+        "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};"
+    };
+    let data_import = if spec.global {
+        format!("use crate::data::{};", spec.table)
+    } else {
+        format!("use crate::data::{{Viewer, {}}};", spec.table)
+    };
+    let state_imports = if has_code {
+        "db_err, not_found, operator_of, status_error, tenant_of, AppState, StatusError"
+    } else {
+        "db_err, not_found, operator_of, status_error, AppState, StatusError"
+    };
+    let viewer_arg = if spec.global {
+        ""
+    } else {
+        ", Viewer::from_ctx(&ctx)"
+    };
+    let tenant_row = if spec.global {
+        ""
+    } else {
+        "        tenant_id: r.tenant_id,\n"
+    };
+    let list_ctx = if spec.global {
+        "        let _ = ctx;\n"
+    } else {
+        ""
+    };
+    let delete_ctx = list_ctx;
+    let tenant_name_row = if spec.global {
+        ""
+    } else {
+        "        tenant_name: None,\n"
+    };
+    let update_filter = if spec.global {
+        String::new()
+    } else {
+        format!(
+            "            .filter({}::Column::TenantId.eq(payload.tenant_id))\n",
+            spec.table
+        )
+    };
+    let code_column = spec
+        .code_field
+        .as_deref()
+        .map(pascal_of)
+        .unwrap_or_default();
+    let tenant_add = if spec.global {
+        String::new()
+    } else {
+        format!(
+            "                            .add({}::Column::TenantId.eq(tenant))\n",
+            spec.table
+        )
+    };
+    let get_body = if has_code {
+        format!(
+            r#"        let tenant = tenant_of(&ctx);
+        let id = match req.query_by {{
+            Some(proto::proto::{pkg_mod}::get_{name}_request::QueryBy::Id(id)) => id,
+            Some(proto::proto::{pkg_mod}::get_{name}_request::QueryBy::Code(code)) => {{
+                // Code 臂：租户内唯一编码换 id（dict_type 同款）。
+                {table}::Entity::find()
+                    .filter(
+                        Condition::all()
+{tenant_add}                            .add({table}::Column::{code_column}.eq(code)),
+                    )
+                    .one(&self.state.db)
+                    .await
+                    .map_err(db_err)?
+                    .map(|r| r.id)
+                    .ok_or_else(|| not_found("{name}"))?
+            }}
+            None => return Err(status_error("BAD_REQUEST", "query_by required")),
+        }};
+        let row = {table}::Entity::find_by_id(id)
+            .one(&self.state.db)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| not_found("{name}"))?;
+        Ok({name}_proto(row))
+    }}
+"#,
+            pkg_mod = spec.pkg_mod,
+            name = spec.name,
+            table = spec.table,
+            tenant_add = tenant_add,
+            code_column = code_column,
+        )
+    } else {
+        format!(
+            r#"        let _ = ctx;
+        let id = match req.query_by {{
+            Some(proto::proto::{pkg_mod}::get_{name}_request::QueryBy::Id(id)) => id,
+            None => return Err(status_error("BAD_REQUEST", "query_by required")),
+        }};
+        let row = {table}::Entity::find_by_id(id)
+            .one(&self.state.db)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| not_found("{name}"))?;
+        Ok({name}_proto(row))
+    }}
+"#,
+            pkg_mod = spec.pkg_mod,
+            name = spec.name,
+            table = spec.table,
+        )
+    };
+
     format!(
         r#"//! {pascal}Service — service layer for module
 
 use std::sync::Arc;
 
-use sea_orm::{{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set}};
+{sea_imports}
 
 use crate::data::repos::{pascal}Repo;
-use crate::data::{{Viewer, {table}}};
+{data_import}
 use crate::state::{{
-    db_err, not_found, operator_of, status_error, AppState, StatusError,
+    {state_imports},
 }};
 use pbjson_types::Empty;
 use proto::proto::{pkg_mod}::{{
@@ -987,19 +1343,17 @@ use proto::proto::{pkg_mod}::{{
 }};
 use proto::proto::pagination::PagingRequest;
 
-fn {name}_proto(r: {table}::Model) -> {pascal} {{
+{helpers}fn {name}_proto(r: {table}::Model) -> {pascal} {{
     {pascal} {{
         id: Some(r.id),
-        tenant_id: r.tenant_id,
-{mapper}        sort_order: r.sort_order,
+{tenant_row}{mapper}        sort_order: r.sort_order,
         created_by: r.created_by,
         updated_by: r.updated_by,
         deleted_by: r.deleted_by,
         created_at: r.created_at.and_then(crate::state::naive_to_ts),
         updated_at: r.updated_at.and_then(crate::state::naive_to_ts),
         deleted_at: r.deleted_at.and_then(crate::state::naive_to_ts),
-        tenant_name: None,
-    }}
+{tenant_name_row}    }}
 }}
 
 pub struct {pascal}Service {{
@@ -1013,8 +1367,8 @@ impl proto::gen::services::{pascal}ServiceHandlers for {pascal}Service {{
         ctx: rushwind_http_binding::ctx::RequestContext,
         req: PagingRequest,
     ) -> Result<List{pascal}Response, StatusError> {{
-        // Listing rides the repo: tenancy predicates live in the data layer.
-        let repo = {pascal}Repo::new(&self.state.db, Viewer::from_ctx(&ctx));
+{list_ctx}        // Listing rides the repo: tenancy predicates live in the data layer.
+        let repo = {pascal}Repo::new(&self.state.db{viewer_arg});
         let (rows, total) = repo.paged_list(&req).await?;
         Ok(List{pascal}Response {{
             items: rows.into_iter().map({name}_proto).collect(),
@@ -1027,19 +1381,7 @@ impl proto::gen::services::{pascal}ServiceHandlers for {pascal}Service {{
         ctx: rushwind_http_binding::ctx::RequestContext,
         req: Get{pascal}Request,
     ) -> Result<{pascal}, StatusError> {{
-        let _ = ctx;
-        let id = match req.query_by {{
-            Some(proto::proto::{pkg_mod}::get_{name}_request::QueryBy::Id(id)) => id,
-            None => return Err(status_error("BAD_REQUEST", "query_by required")),
-        }};
-        let row = {table}::Entity::find_by_id(id)
-            .one(&self.state.db)
-            .await
-            .map_err(db_err)?
-            .ok_or_else(|| not_found("{name}"))?;
-        Ok({name}_proto(row))
-    }}
-
+{get_body}
     async fn create(
         &self,
         ctx: rushwind_http_binding::ctx::RequestContext,
@@ -1048,7 +1390,6 @@ impl proto::gen::services::{pascal}ServiceHandlers for {pascal}Service {{
         let payload = operator_of(&ctx)?;
         let data = crate::state::require_data(req.data)?;
         {table}::ActiveModel {{
-            tenant_id: Set(Some(payload.tenant_id)),
 {create}            sort_order: Set(Some(0)),
             created_by: Set(Some(payload.user_id)),
             created_at: Set(Some(crate::data::now())),
@@ -1068,8 +1409,7 @@ impl proto::gen::services::{pascal}ServiceHandlers for {pascal}Service {{
     ) -> Result<Empty, StatusError> {{
         let payload = operator_of(&ctx)?;
         let row = {table}::Entity::find_by_id(req.id)
-            .filter({table}::Column::TenantId.eq(payload.tenant_id))
-            .one(&self.state.db)
+{update_filter}            .one(&self.state.db)
             .await
             .map_err(db_err)?
             .ok_or_else(|| not_found("{name}"))?;
@@ -1087,8 +1427,8 @@ impl proto::gen::services::{pascal}ServiceHandlers for {pascal}Service {{
         ctx: rushwind_http_binding::ctx::RequestContext,
         req: Delete{pascal}Request,
     ) -> Result<Empty, StatusError> {{
-        let _ = ctx;
-        let repo = {pascal}Repo::new(&self.state.db, Viewer::from_ctx(&ctx));
+{delete_ctx}        let _ = ctx;
+        let repo = {pascal}Repo::new(&self.state.db{viewer_arg});
         repo.delete_batch(&req.ids).await?;
         Ok(Empty {{}})
     }}
@@ -1098,8 +1438,19 @@ impl proto::gen::services::{pascal}ServiceHandlers for {pascal}Service {{
         name = spec.name,
         table = spec.table,
         pkg_mod = spec.pkg_mod,
+        sea_imports = sea_imports,
+        data_import = data_import,
+        state_imports = state_imports,
+        helpers = enum_helpers(spec),
+        tenant_row = tenant_row,
+        list_ctx = list_ctx,
+        delete_ctx = delete_ctx,
         mapper = mapper_fields(spec),
+        tenant_name_row = tenant_name_row,
+        viewer_arg = viewer_arg,
+        get_body = get_body,
         create = create_fields(spec),
+        update_filter = update_filter,
         update = update_fields(spec),
     )
 }
@@ -1217,25 +1568,124 @@ mod tests {
                     kind: FieldKind::Uint32,
                 },
             ],
+            code_field: Some("code".to_owned()),
+            global: false,
         };
         let admin = admin_proto(&spec);
         assert!(admin.contains("get: \"/admin/v1/widgets\""));
         assert!(admin.contains("import \"widget/service/v1/widget.proto\";"));
+        assert!(
+            admin.contains(
+                "additional_bindings {\n        get: \"/admin/v1/widgets/code/{code}\"\n      }"
+            ),
+            "code 臂附加路由：{admin}"
+        );
 
         let svc = service_file(&spec);
         assert!(svc.contains("impl proto::gen::services::WidgetServiceHandlers for WidgetService"));
         assert!(svc.contains("widget::service::v1::get_widget_request::QueryBy::Id(id)"));
+        assert!(svc.contains("QueryBy::Code(code)"), "code 臂查询分支");
+        assert!(svc.contains("Column::Code.eq(code)"));
         assert!(svc.contains("code: Set(data.code.unwrap_or_default()),"));
         assert!(svc.contains("quantity: Set(data.quantity),"));
-        assert!(svc.contains("if let Some(v) = data.quantity {\n                a.quantity = Set(Some(v));\n            }"));
+        assert!(svc.contains(
+            "if let Some(v) = data.quantity {\n                a.quantity = Set(Some(v));\n            }"
+        ));
 
         let entity = entity_file(&spec);
         assert!(entity.contains("#[sea_orm(table_name = \"sys_widgets\")]"));
         assert!(entity.contains("pub code: String,"));
         assert!(entity.contains("pub quantity: Option<u32>,"));
+        assert!(entity.contains("pub tenant_id: Option<u32>,"));
 
         let msg = message_proto(&spec);
         assert!(msg.contains("optional string code = 2 ["));
         assert!(msg.contains("optional uint32 quantity = 3 ["));
+    }
+
+    #[test]
+    fn enum_kind_parses_and_validates() {
+        let ok = FieldKind::parse("enum(0=DISABLED,1=NORMAL,2=PENDING@default=NORMAL)");
+        let Some(FieldKind::Enum(values)) = ok else {
+            panic!("合法枚举语法应可解析");
+        };
+        assert_eq!(values.values.len(), 3);
+        assert_eq!(values.default, "NORMAL");
+
+        // 缺省 @default → 取 0 值文本
+        let Some(FieldKind::Enum(values)) = FieldKind::parse("enum(0=OFF,1=ON)") else {
+            panic!("无 @default 也应可解析");
+        };
+        assert_eq!(values.default, "OFF");
+
+        assert!(FieldKind::parse("enum()").is_none(), "空取值集");
+        assert!(FieldKind::parse("enum(1=ON)").is_none(), "必须含 0 值项");
+        assert!(FieldKind::parse("enum(0=on)").is_none(), "文本须大写下划线");
+        assert!(FieldKind::parse("enum(0=A,0=B)").is_none(), "数值重复");
+        assert!(
+            FieldKind::parse("enum(0=A@default=Z)").is_none(),
+            "@default 须在取值集内"
+        );
+        assert!(FieldKind::parse("enum(0=A@default=nope)").is_none());
+    }
+
+    #[test]
+    fn enum_and_global_templates_drop_or_add_the_right_marks() {
+        let enum_kind = FieldKind::parse("enum(0=DISABLED,1=ENABLED@default=ENABLED)").unwrap();
+        let spec = EntitySpec {
+            name: "gadget".to_owned(),
+            pascal: "Gadget".to_owned(),
+            table: "sys_gadgets".to_owned(),
+            package: "gadget.service.v1".to_owned(),
+            pkg_mod: "gadget::service::v1".to_owned(),
+            proto_dir: "gadget/service/v1".to_owned(),
+            route_prefix: "/admin/v1/gadgets".to_owned(),
+            fields: vec![FieldSpec {
+                name: "state".to_owned(),
+                kind: enum_kind,
+            }],
+            code_field: None,
+            global: true,
+        };
+
+        let msg = message_proto(&spec);
+        assert!(
+            msg.contains("enum State {\n    DISABLED = 0;\n    ENABLED = 1;\n  }"),
+            "嵌套 enum 块：{msg}"
+        );
+        assert!(msg.contains("optional State state = 2 ["));
+        assert!(!msg.contains("tenant_id"), "全局表消息无租户列");
+        assert!(!msg.contains("tenant_name"));
+
+        let entity = entity_file(&spec);
+        assert!(entity.contains("/// enum(DISABLED,ENABLED) default ENABLED."));
+        assert!(entity.contains("pub state: Option<String>,"));
+        assert!(!entity.contains("pub tenant_id"), "全局表实体无租户列");
+
+        let repo = repo_file(&spec);
+        assert!(repo.contains("repo_shell!(global GadgetRepo, entity)"));
+        assert!(!repo.contains("Viewer"), "全局 repo 无 viewer");
+
+        let svc = service_file(&spec);
+        assert!(svc.contains("fn state_to_text(v: i32) -> String"));
+        assert!(svc.contains("1 => \"ENABLED\".to_string(),"));
+        assert!(
+            svc.contains("_ => \"ENABLED\".to_string(),"),
+            "未识别回退 = @default"
+        );
+        assert!(svc.contains("fn state_from_text(value: Option<&str>) -> i32"));
+        assert!(svc.contains("state: Some(state_from_text(r.state.as_deref())),"));
+        assert!(svc.contains("state: Set(Some(state_to_text(data.state.unwrap_or(0)))),"));
+        assert!(!svc.contains("tenant_id: Set("), "全局 create 无租户");
+        assert!(!svc.contains("Column::TenantId"), "全局 update 无租户过滤");
+        assert!(
+            svc.contains("Repo::new(&self.state.db)"),
+            "全局 repo 不带 viewer"
+        );
+        assert!(
+            !svc.contains("ColumnTrait, EntityTrait, QueryFilter, Set"),
+            "全局表按需裁剪 sea_orm 导入"
+        );
+        assert!(svc.contains("use sea_orm::{ActiveModelTrait, EntityTrait, Set};"));
     }
 }

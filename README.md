@@ -2,6 +2,10 @@
 
 # rushwind-toolkit
 
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.81+-DEA584?logo=rust)](https://www.rust-lang.org/)
+[![CI](https://github.com/tx7do/rushwind-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/tx7do/rushwind-toolkit/actions/workflows/ci.yml)
+
 **中文** | [English](./README.en-US.md) | [日本語](./README.ja-JP.md)
 
 </div>
@@ -48,7 +52,9 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
    `frontend/admin/react.MANIFEST.sha256`；
 2. 从 `.github/workflows/ci.yml` 剥离两个同步门禁步（连同紧邻的注释块）；
 3. 上游漂移基线 `react.UPSTREAM.sha256` 默认保留并提示，`--prune-upstream-baseline`
-   删除。
+   删除；
+4. 两个 sync 脚本**机制性退役**：改写为拒跑 stub（sync 会整树覆盖、--check
+   会把手改当篡改，对下游都是反向语义），`--keep-sync-scripts` 保留原脚本。
 
 幂等可重入；`--dry-run` 全程预览不落盘；`--keep-gates` 只重建清单不动 CI
 （仍想跟踪上游的维护者模式）。
@@ -79,9 +85,27 @@ rush manifest proto             # 默认只校验（只读）
 dict_type 实体链），一次命令拿到可编译的骨架：
 
 ```shell
+# 标准 CRUD 实体
 rush gen entity widget \
   --field code:string --field quantity:u32 --field is_active:bool
+
+# 带唯一编码（Get 获得 code 臂与 /widgets/code/{code} 附加路由）
+rush gen entity widget --field code:string --code-field code
+
+# 平台全局表（全链去租户）
+rush gen entity setting --global --field key:string
+
+# 枚举字段（proto enum → 文本列，仓内标准模式）
+rush gen entity task --field state:enum(0=DRAFT,1=ACTIVE@default=ACTIVE)
+
+# 生成后自动 cargo check 验证
+rush gen entity widget --field code:string --code-field code --check
 ```
+
+字段模型：`string|i32|u32|bool|f64|enum(0=A,1=B@default=B)`。`--code-field`
+要求该字段为 string。`--global` 同时裁剪消息、实体、repo（global 臂）与
+service 的租户面。枚举按仓内标准模式生成：消息内嵌 enum、SeaORM 文本列、
+i32↔文本转换函数、`@default` 为未识别值回退。
 
 生成物：
 
@@ -98,9 +122,9 @@ rush gen entity widget \
   mount 表）
 - proto MANIFEST 自动重建（`--skip-manifest` 跳过）
 
-字段类型 `string|i32|u32|bool|f64`；标准列（id / tenant_id / sort_order /
-审计人与时间戳）自动带上。生成后 `cargo check` 即绿（在真实 rushwind-admin
-上以 gizmo 实体验证过），建议顺手 `cargo fmt`。
+标准列（id / sort_order / 审计人与时间戳；租户表含 tenant_id）自动带上。
+生成后 `cargo check` 即绿（在真实 rushwind-admin 上以三个实体验证过：code
+臂、全局+枚举、三者组合，零警告），建议顺手 `cargo fmt`。
 
 `--dry-run` 预览全部动作不落盘。已部署库的说明与 seed / 前端 / testbed 等
 后续手动步骤见命令输出的提示。
