@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use rush_gen::adopt::{self, AdoptOptions, UpstreamBaseline};
 use rush_gen::entity::{self, EntityOptions, FieldKind, FieldSpec};
 use rush_gen::manifest::{self, CheckReport, Flavor};
+use rush_gen::project::{self, NewOptions};
 
 /// rush — RushWind 生态工具箱
 #[derive(Debug, Parser)]
@@ -59,11 +60,24 @@ enum Commands {
         #[arg(long)]
         rebuild: bool,
     },
-    /// [规划中] 从模板创建新项目
+    /// 从模板创建一个新的 RushWind 服务项目（内嵌模板开箱即跑，
+    /// `--template` 可指定任意外部模板目录并按其包名重命名）
     New {
-        /// 项目名
+        /// 项目名（= crate 名 + 目录名）
         #[arg(value_name = "NAME")]
         name: String,
+        /// 目标父目录
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        /// 外部模板目录（缺省用内嵌模板）
+        #[arg(long)]
+        template: Option<PathBuf>,
+        /// 不执行 git init
+        #[arg(long)]
+        no_git: bool,
+        /// 只报告不落盘
+        #[arg(long)]
+        dry_run: bool,
     },
     /// 生成代码
     Gen {
@@ -183,8 +197,23 @@ fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::New { .. } => {
-            bail!("该命令尚未实现（路线图见 README）；当前可用：rush adopt / rush manifest / rush gen entity");
+        Commands::New {
+            name,
+            dir,
+            template,
+            no_git,
+            dry_run,
+        } => {
+            let opts = NewOptions {
+                name,
+                dest: dir,
+                template,
+                git: !no_git,
+                dry_run,
+            };
+            let report = project::new_project(&opts).context("new 失败")?;
+            render_new(&report, dry_run);
+            Ok(())
         }
         Commands::Gen {
             target:
@@ -226,6 +255,24 @@ fn run(cli: Cli) -> Result<()> {
             render_gen(&report, dry_run);
             Ok(())
         }
+    }
+}
+
+fn render_new(report: &project::NewReport, dry_run: bool) {
+    let tag = if dry_run { "[dry-run] " } else { "" };
+    println!(
+        "{tag}项目目录：{}（模板：{}）",
+        report.project_dir.display(),
+        report.template_source
+    );
+    if let Some(old) = &report.renamed_from {
+        println!("{tag}重命名自包名：{old}");
+    }
+    for path in &report.files {
+        println!("  + {}", path.display());
+    }
+    for note in &report.notes {
+        println!("注意：{note}");
     }
 }
 

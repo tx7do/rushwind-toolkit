@@ -24,7 +24,7 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
 | `rush adopt` | ✅ | 把 rushwind-admin 快照从“上游镜像”接管为下游自有仓 |
 | `rush manifest` | ✅ | 校验 / 重建 proto 与 react 两个同步面的 sha256 清单 |
 | `rush gen entity` | ✅ | 领域实体后端全链生成 |
-| `rush new` | 规划中 | 从模板创建新项目 |
+| `rush new` | ✅ | 从模板创建可编译、可直接 cargo run 的新项目 |
 | `rush testbed` | 规划中 | admin-diff 差分回归台架的 sweep/fixture 包装 |
 
 ### `rush adopt` —— 下游接管（二次开发第一步）
@@ -97,13 +97,28 @@ rush gen entity widget \
 `--dry-run` 预览全部动作不落盘。已部署库的说明与 seed / 前端 / testbed 等
 后续手动步骤见命令输出的提示。
 
+### `rush new` —— 新项目脚手架
+
+```shell
+rush new my-server && cd my-server && cargo run
+```
+
+内嵌模板自包含：rushwind git 依赖钉在与 rushwind-admin 一致的 rev，一个
+YAML 文档组装内存存储、自动 CRUD 边（`/items`）和 HTTP 服务器——`cargo
+run` 后按提示 `curl /health`、`/wired`、`/items` 即可体验全链。默认 `git
+init`（`--no-git` 跳过），`--dir` 指定目标父目录。
+
+`--template <dir>` 可换成任意外部模板（如 rushwind 仓的
+`examples/bootstrap-demo`）：整树拷贝（跳过 `.git`/`target`），并按模板
+Cargo.toml 的包名做 token 重命名（含下划线变体）；非文本文件字节级原样。
+
 ## 仓库结构
 
 ```
 rushwind-toolkit/
 ├── crates/
 │   ├── rush-cli/     # `rush` 可执行入口（clap 命令面）
-│   └── rush-gen/     # 核心库：清单双算法 + adopt + 实体链生成
+│   └── rush-gen/     # 核心库：清单双算法 + adopt + 实体链生成 + 项目脚手架
 └── ...
 ```
 
@@ -115,8 +130,8 @@ rushwind-toolkit/
 - [x] `rush adopt` / `rush manifest`
 - [x] `rush gen entity`：领域实体后端全链生成（proto 双面 + SeaORM 实体 +
       repo + Handlers trait 实现 + 六处注册 + 清单重建）
-- [ ] `rush new`：从模板起项目（rushwind examples + rushwind-bootstrap
-      YAML 组装的模板化）
+- [x] `rush new`：新项目脚手架（内嵌自包含模板 + 外部模板整树拷贝与包名
+      重命名）
 - [ ] `rush testbed`：差分回归台架的 fixture 重建 / 全量路由 sweep 包装
 - [ ] 前端页面生成：与 go-wind-toolkit 的 frontendgen（Vben / Element /
       React 三栈）做文档级集成，而非在 Rust 侧重写

@@ -12,6 +12,7 @@
 pub mod adopt;
 pub mod entity;
 pub mod manifest;
+pub mod project;
 
 use std::io;
 use std::path::PathBuf;
