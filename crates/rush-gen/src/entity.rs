@@ -228,7 +228,8 @@ pub fn camel_of(snake: &str) -> String {
     }
 }
 
-fn is_snake(s: &str) -> bool {
+/// snake_case 校验（生成器各入口共用的输入约束）。
+pub fn is_snake(s: &str) -> bool {
     let mut cs = s.chars();
     let first_ok = cs.next().is_some_and(|c| c.is_ascii_lowercase());
     first_ok
@@ -534,9 +535,9 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
     report.notes.push(
         "已有数据的库：init 迁移（m20250915_000001_init）不会重放，新表需手工建表或在 migration.rs 追加独立迁移条目".to_owned(),
     );
-    report
-        .notes
-        .push("seed.rs 菜单种子与三套前端页面未生成（手动）".to_owned());
+    report.notes.push(
+        "三套前端页面未生成：React 面用 rush gen pages（菜单种子随其一并写入 seed.rs）".to_owned(),
+    );
     report
         .notes
         .push("生成后建议在 backend/ 下运行 cargo fmt（导入折行与长行由 rustfmt 归位）".to_owned());
@@ -1011,6 +1012,17 @@ service {pascal}Service {{
 fn entity_fields(spec: &EntitySpec) -> String {
     let mut out = String::new();
     for field in &spec.fields {
+        // code 列带 unique：建表派生（EntityTables）读 #[sea_orm(unique)]
+        // 生成 UNIQUE 约束，code 臂查询的唯一性前提落在 schema 上，而非
+        // 仅靠运行时约定。
+        if spec
+            .code_field
+            .as_deref()
+            .map(|code| code == field.name)
+            .unwrap_or(false)
+        {
+            out.push_str("        #[sea_orm(unique)]\n");
+        }
         if let FieldKind::Enum(values) = &field.kind {
             let texts: Vec<String> = values.values.iter().map(|(_, text)| text.clone()).collect();
             out.push_str(&format!(
@@ -1594,9 +1606,17 @@ mod tests {
 
         let entity = entity_file(&spec);
         assert!(entity.contains("#[sea_orm(table_name = \"sys_widgets\")]"));
-        assert!(entity.contains("pub code: String,"));
+        assert!(
+            entity.contains("#[sea_orm(unique)]\n        pub code: String,"),
+            "code 列带 unique 标注：{entity}"
+        );
         assert!(entity.contains("pub quantity: Option<u32>,"));
         assert!(entity.contains("pub tenant_id: Option<u32>,"));
+        assert_eq!(
+            entity.matches("#[sea_orm(unique)]").count(),
+            1,
+            "只有 code 列带 unique"
+        );
 
         let msg = message_proto(&spec);
         assert!(msg.contains("optional string code = 2 ["));
@@ -1661,6 +1681,10 @@ mod tests {
         assert!(entity.contains("/// enum(DISABLED,ENABLED) default ENABLED."));
         assert!(entity.contains("pub state: Option<String>,"));
         assert!(!entity.contains("pub tenant_id"), "全局表实体无租户列");
+        assert!(
+            !entity.contains("#[sea_orm(unique)]"),
+            "无 code 字段时不带 unique 标注"
+        );
 
         let repo = repo_file(&spec);
         assert!(repo.contains("repo_shell!(global GadgetRepo, entity)"));

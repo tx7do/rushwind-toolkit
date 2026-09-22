@@ -464,6 +464,12 @@ fn render_pages(report: &pages::PagesReport, dry_run: bool) {
             println!("  + {}", path.display());
         }
     }
+    if !report.edited.is_empty() {
+        println!("{tag}编辑文件：");
+        for path in &report.edited {
+            println!("  ~ {}", path.display());
+        }
+    }
     for item in &report.skipped {
         println!("  = 跳过 {item}");
     }

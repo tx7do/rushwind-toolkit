@@ -8,12 +8,13 @@
 //!
 //! 路由注册是后端驱动的（菜单种子里的组件路径），因此页面文件放到
 //! `pages/app/<group>/<plural>/` 即可被动态路由拾取，无需改前端路由；
-//! 菜单种子是后端的手动步骤（见 gen entity 的提示）。
+//! 菜单种子由本命令一并手术插入 seed.rs（`seed_gen_menu_<name>`，按
+//! path 幂等，增量生效——固定 rows 数组的 seed_menus 只对空库生效）。
 
 use std::fs;
 use std::path::PathBuf;
 
-use crate::entity::{camel_of, pascal_of, plural_of, FieldKind, FieldSpec};
+use crate::entity::{camel_of, is_snake, pascal_of, plural_of, FieldKind, FieldSpec};
 use crate::{Error, Result};
 
 /// `rush gen pages` 选项。
@@ -39,6 +40,8 @@ pub struct PagesOptions {
 #[derive(Debug, Default)]
 pub struct PagesReport {
     pub created: Vec<PathBuf>,
+    /// 手术插入的既有文件（seed.rs）。
+    pub edited: Vec<PathBuf>,
     pub skipped: Vec<String>,
     pub notes: Vec<String>,
 }
@@ -80,11 +83,19 @@ fn validate(opts: &PagesOptions) -> Result<PagesSpec> {
         None => None,
     };
     let plural = plural_of(&opts.name);
+    let group = opts.group.clone().unwrap_or_else(|| "system".to_owned());
+    // group 落三个面：页面目录、菜单 path 段、module 常量（大写化）——
+    // 必须是合法 snake_case。
+    if !is_snake(&group) {
+        return Err(Error::InvalidInput(format!(
+            "分组目录必须是 snake_case：{group}"
+        )));
+    }
     Ok(PagesSpec {
         name: opts.name.clone(),
         pascal: pascal_of(&opts.name),
         plural,
-        group: opts.group.clone().unwrap_or_else(|| "system".to_owned()),
+        group,
         route_prefix: opts
             .route_prefix
             .clone()
@@ -151,9 +162,73 @@ pub fn generate_pages(opts: &PagesOptions) -> Result<PagesReport> {
         }
     }
 
+    // ---- seed.rs 菜单种子的编辑计划（锚点在写入前全部校验） ----
+    // 幂等标记：调用行与函数体各自查重，任一在位只补缺席的一半。
+    let seed_rs = opts
+        .repo_root
+        .join("backend/services/admin-api/src/seed.rs");
+    let fn_name = seed_menu_fn(&spec.name);
+    let call_line = format!("    {fn_name}(state).await?;");
+    let call_marker = format!("{fn_name}(state)");
+    let fn_marker = format!("async fn {fn_name}");
+    let mut seed_edits: Vec<String> = Vec::new();
+    let mut seed_already = false;
+    if seed_rs.is_file() {
+        let mut text = fs::read_to_string(&seed_rs)?;
+        let had_call = text.contains(&call_marker);
+        let had_fn = text.contains(&fn_marker);
+        if had_call && had_fn {
+            seed_already = true;
+        } else {
+            if !text.contains("seed_menus(state).await?;") {
+                return Err(Error::InvalidInput(format!(
+                    "{} 中找不到 seed_menus 调用锚点（目标仓 seed.rs 不是 rushwind-admin 形状？）",
+                    seed_rs.display()
+                )));
+            }
+            if !text.contains("async fn seed_languages") {
+                return Err(Error::InvalidInput(format!(
+                    "{} 中找不到 seed_languages 函数锚点",
+                    seed_rs.display()
+                )));
+            }
+            if !had_call {
+                text = insert_seed_call(&text, &call_line).ok_or_else(|| {
+                    Error::InvalidInput(format!(
+                        "{} 中找不到 seed_menus 调用锚点",
+                        seed_rs.display()
+                    ))
+                })?;
+            }
+            if !had_fn {
+                let function = seed_menu_function(&spec);
+                let edited = text.replacen(
+                    "async fn seed_languages",
+                    &format!("{function}\nasync fn seed_languages"),
+                    1,
+                );
+                if edited == text {
+                    return Err(Error::InvalidInput(format!(
+                        "{} 中找不到 seed_languages 函数锚点",
+                        seed_rs.display()
+                    )));
+                }
+                text = edited;
+            }
+            seed_edits.push(text);
+        }
+    }
+
     let mut report = PagesReport::default();
     if opts.dry_run {
         report.created = files.iter().map(|(p, _)| p.clone()).collect();
+        if !seed_edits.is_empty() {
+            report.edited.push(seed_rs.clone());
+        } else if seed_already {
+            report
+                .skipped
+                .push(format!("{}（菜单种子已在位）", seed_rs.display()));
+        }
         return Ok(report);
     }
 
@@ -165,9 +240,27 @@ pub fn generate_pages(opts: &PagesOptions) -> Result<PagesReport> {
         report.created.push(path.clone());
     }
 
-    report
-        .notes
-        .push("菜单是后端种子驱动的：在 seed.rs 加菜单项（组件路径 app/<group>/<plural>/index）后页面才会出现在导航".to_owned());
+    for text in &seed_edits {
+        fs::write(&seed_rs, text)?;
+    }
+    if !seed_edits.is_empty() {
+        report.edited.push(seed_rs.clone());
+    } else if seed_already {
+        report
+            .skipped
+            .push(format!("{}（菜单种子已在位）", seed_rs.display()));
+    }
+
+    if seed_rs.is_file() {
+        report.notes.push(format!(
+            "菜单种子已写入 seed.rs（{fn_name}：按 path 幂等增量，父目录 /{} 缺失时自动补 CATALOG 行；标题用「{}」占位，文案请按需修改）",
+            spec.group, spec.pascal
+        ));
+    } else {
+        report
+            .notes
+            .push("目标仓没有 seed.rs，菜单种子未生成（页面放 pages/app/<group>/<plural>/ 后需手动配菜单）".to_owned());
+    }
     report
         .notes
         .push("生成后建议在 frontend/admin/react 下运行 pnpm typecheck".to_owned());
@@ -801,6 +894,118 @@ export default {pascal}Management;
     )
 }
 
+// ---- 菜单种子模板（seed.rs 手术插入） ----
+
+/// 生成的菜单种子函数名（`<name>` 为实体 snake 名）。
+fn seed_menu_fn(name: &str) -> String {
+    format!("seed_gen_menu_{name}")
+}
+
+/// 菜单种子函数体：按 path 幂等（同路径菜单行已存在即跳过），父目录
+/// `/<group>` 缺失时先补一行 CATALOG。不能挂进固定 rows 数组——那个
+/// 数组所在的 seed_menus 对非空菜单表整体早退，增量菜单只能独立成
+/// 函数才能在既有库上生效。
+fn seed_menu_function(spec: &PagesSpec) -> String {
+    let module = spec.group.to_uppercase();
+    let group = &spec.group;
+    let menu_path = format!("/{}/{}", spec.group, spec.plural);
+    let component = format!("{}/index", menu_path.trim_start_matches('/'));
+    format!(
+        r#"/// Generated by `rush gen pages` — {pascal} 管理菜单。按 path 幂等：
+/// 同路径菜单行已存在即跳过；父目录 /{group} 缺失时先补 CATALOG 行。
+async fn {fn_name}(state: &Arc<AppState>) -> Result<(), String> {{
+    use crate::data::sys_menus as menus;
+
+    let menu_path = "{menu_path}";
+    let exists = menus::Entity::find()
+        .filter(menus::Column::Path.eq(menu_path))
+        .one(&state.db)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some();
+    if exists {{
+        return Ok(());
+    }}
+
+    let parent_id = match menus::Entity::find()
+        .filter(menus::Column::Path.eq("/{group}"))
+        .one(&state.db)
+        .await
+        .map_err(|e| e.to_string())?
+    {{
+        Some(catalog) => Some(catalog.id),
+        None => {{
+            let catalog = menus::ActiveModel {{
+                type_column: Set(Some("CATALOG".into())),
+                path: Set(Some("/{group}".into())),
+                name: Set("{group}".into()),
+                component: Set(Some("{group}".into())),
+                module: Set(Some("{module}".into())),
+                meta: Set(Some(serde_json::json!({{
+                    "title": "{group}", "icon": "lucide:circle", "order": 90,
+                }}))),
+                status: Set(Some("ON".into())),
+                created_at: Set(Some(crate::data::now())),
+                updated_at: Set(Some(crate::data::now())),
+                ..Default::default()
+            }}
+            .insert(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+            Some(catalog.id)
+        }}
+    }};
+
+    insert_seed!(
+        &state.db,
+        menus::ActiveModel {{
+            parent_id: Set(parent_id),
+            type_column: Set(Some("MENU".into())),
+            path: Set(Some(menu_path.into())),
+            name: Set("{plural}".into()),
+            component: Set(Some("{component}".into())),
+            module: Set(Some("{module}".into())),
+            meta: Set(Some(serde_json::json!({{
+                "title": "{pascal}", "icon": "lucide:circle", "order": 99,
+            }}))),
+            status: Set(Some("ON".into())),
+            created_at: Set(Some(crate::data::now())),
+            updated_at: Set(Some(crate::data::now())),
+            ..Default::default()
+        }}
+    );
+    Ok(())
+}}
+"#,
+        fn_name = seed_menu_fn(&spec.name),
+        pascal = spec.pascal,
+        plural = spec.plural,
+        group = group,
+        module = module,
+        menu_path = menu_path,
+        component = component,
+    )
+}
+
+/// 在 run() 中插入调用行：已有 gen 菜单调用则接在最后一个之后（多次
+/// 生成聚成一组），否则紧跟 seed_menus 行。锚点缺失返回 None。
+fn insert_seed_call(text: &str, call: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let anchor = lines
+        .iter()
+        .rposition(|line| line.contains("seed_gen_menu_"))
+        .or_else(|| {
+            lines
+                .iter()
+                .position(|line| line.contains("seed_menus(state).await?;"))
+        })?;
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len() + 1);
+    out.extend_from_slice(&lines[..=anchor]);
+    out.push(call);
+    out.extend_from_slice(&lines[anchor + 1..]);
+    Some(out.join("\n"))
+}
+
 /// locale JSON（serde_json 生成保证合法）。zh 与 en 的键集一致。
 fn locale_file(spec: &PagesSpec, zh: bool) -> String {
     let mut map = serde_json::Map::new();
@@ -998,5 +1203,95 @@ mod tests {
         );
         assert!(zh_map.contains_key("moduleName"));
         assert!(zh_map.contains_key("state_0"));
+    }
+
+    #[test]
+    fn seed_menu_template_is_idempotent_by_path() {
+        let function = seed_menu_function(&spec());
+        assert!(function.contains(
+            "async fn seed_gen_menu_widget(state: &Arc<AppState>) -> Result<(), String>"
+        ));
+        assert!(function.contains("let menu_path = \"/system/widgets\";"));
+        assert!(function.contains("component: Set(Some(\"system/widgets/index\".into())"));
+        assert!(function.contains("module: Set(Some(\"SYSTEM\".into())"));
+        assert!(
+            function.contains("menus::Column::Path.eq(menu_path)"),
+            "按 path 查重"
+        );
+        assert!(
+            function.contains("menus::Column::Path.eq(\"/system\")"),
+            "父目录查找"
+        );
+        assert!(
+            function.contains("Some(catalog.id)"),
+            "父目录缺失时补 CATALOG 并取其 id"
+        );
+        assert!(
+            function.contains("insert_seed!("),
+            "菜单行走仓内 insert_seed 宏"
+        );
+    }
+
+    #[test]
+    fn seed_call_lands_after_seed_menus_and_groups_gen_calls() {
+        let seed = "pub async fn run(state: &Arc<AppState>) -> Result<(), String> {\n    seed_languages(state).await?;\n    seed_menus(state).await?;\n    seed_admin_user(state).await?;\n    Ok(())\n}\n";
+        let call = "    seed_gen_menu_widget(state).await?;";
+        let out = insert_seed_call(seed, call).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        let menus_at = lines
+            .iter()
+            .position(|l| l.contains("seed_menus(state)"))
+            .unwrap();
+        let call_at = lines
+            .iter()
+            .position(|l| l.contains("seed_gen_menu_widget"))
+            .unwrap();
+        let admin_at = lines
+            .iter()
+            .position(|l| l.contains("seed_admin_user(state)"))
+            .unwrap();
+        assert!(
+            menus_at < call_at && call_at < admin_at,
+            "紧跟 seed_menus：{out}"
+        );
+
+        // 第二个实体接在既有 gen 调用之后（聚成一组）
+        let out = insert_seed_call(&out, "    seed_gen_menu_gadget(state).await?;").unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        let widget_at = lines
+            .iter()
+            .position(|l| l.contains("seed_gen_menu_widget"))
+            .unwrap();
+        let gadget_at = lines
+            .iter()
+            .position(|l| l.contains("seed_gen_menu_gadget"))
+            .unwrap();
+        assert!(widget_at < gadget_at);
+
+        assert!(insert_seed_call("no anchors here", call).is_none());
+    }
+
+    #[test]
+    fn group_must_be_snake_case() {
+        let base = || PagesOptions {
+            repo_root: PathBuf::from("/tmp/nowhere"),
+            name: "widget".to_owned(),
+            group: None,
+            route_prefix: None,
+            fields: vec![],
+            code_field: None,
+            dry_run: true,
+        };
+        assert!(validate(&base()).is_ok(), "缺省 group = system");
+        assert!(validate(&PagesOptions {
+            group: Some("myGroup".to_owned()),
+            ..base()
+        })
+        .is_err());
+        assert!(validate(&PagesOptions {
+            group: Some("my_group".to_owned()),
+            ..base()
+        })
+        .is_ok());
     }
 }
