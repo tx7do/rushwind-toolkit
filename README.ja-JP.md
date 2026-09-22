@@ -37,7 +37,7 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
 | `rush manifest` | ✅ | proto / react 同期面の sha256 マニフェストを検証・再構築 |
 | `rush gen entity` | ✅ | ドメインエンティティのバックエンド一式を生成 |
 | `rush new` | ✅ | `cargo run` ですぐ動く新規プロジェクトを生成 |
-| `rush testbed` | 計画中 | admin-diff 差分回帰ベンチの sweep/fixture ラッパー |
+| `rush testbed` | ✅ | 差分ベンチのオーケストレーションとレポート要約（docker は起動しない） |
 
 ### `rush adopt` —— 下流の引き取り（二次開発の最初の一歩）
 
@@ -140,6 +140,30 @@ rushwind-admin と同じ rev にピン留めされ、1 枚の YAML ドキュメ�
 してトークン置換（アンダースコア変形も含む）。テキスト以外のファイルはバイ
 ト単位でそのままコピーします。
 
+### `rush testbed` —— 差分ベンチのオーケストレーションとレポート要約
+
+`backend/testbed/README` の 3 ステップ実行手順をコマンドに凝縮します。
+**コンテナ規律**：Go 参照側は docker 差分スタックで動いており、rush は決し
+て起動しません。Go エンドポイントに到達できない場合は手動手順
+（`cd backend/testbed && docker compose up -d --build`）とともに即座にエ
+ラーになります。
+
+```shell
+rush testbed run     # ビルド → Rust 側（:7788）起動 → admin-diff で再生 → レポート要約
+rush testbed report  # JSONL レポートをオフライン要約（既定 backend/testbed/reports/report.jsonl）
+```
+
+`run` のオーケストレーション：コーパス/豁免集/両クレートの存在確認 → Go エ
+ンドポイントの事前確認（落ちていれば停止）→ Rust エンドポイントが落ちてい
+れば `cargo build` して admin-api を起動し、準備完了を待機 → リポジトリの既
+定引数（`--go/--rust/--corpus/--exemptions/--out`）でリプレイヤーを実行 →
+起動したプロセスを回収（`--keep-server` で保持）→ リプレイヤーの終了コード
+を透過し、レポートを要約。
+
+`report` の要約：verdict のヒストグラム（Ok/Fail/Exempt/Pending/
+Unreachable）、class×verdict マトリクス、豁免を超えた分歧（Fail）とその証
+拠、到達不能ケースの一覧——JSONL を目で追う必要はもうありません。
+
 ## リポジトリ構成
 
 ```
@@ -161,8 +185,9 @@ rushwind-toolkit/
       登録 + マニフェスト再構築）
 - [x] `rush new`：新規プロジェクトのスキャフォールド（自己完結テンプレー
       ト + 外部テンプレートのコピーとパッケージ名リネーム）
-- [ ] `rush testbed`：差分回帰ベンチの fixture 再構築 / 全ルート sweep
-      ラッパー
+- [x] `rush testbed`：差分ベンチのオーケストレーション（ビルド/起動/再生/
+      回収、コンテナ規律：docker には触れない）+ JSONL レポートのオフライ
+      ン要約
 - [ ] フロントエンドページ生成：Vben / Element / React の 3 スタック向け
       ページスキャフォールド（Rust 側での再実装ではなく、既存のフロントエ
       ンド生成チェーンとの連携を優先）

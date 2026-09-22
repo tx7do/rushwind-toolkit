@@ -33,7 +33,7 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
 | `rush manifest` | ✅ | 校验 / 重建 proto 与 react 两个同步面的 sha256 清单 |
 | `rush gen entity` | ✅ | 领域实体后端全链生成 |
 | `rush new` | ✅ | 从模板创建可编译、可直接 cargo run 的新项目 |
-| `rush testbed` | 规划中 | admin-diff 差分回归台架的 sweep/fixture 包装 |
+| `rush testbed` | ✅ | 差分台架编排与报告摘要（绝不代启 docker） |
 
 ### `rush adopt` —— 下游接管（二次开发第一步）
 
@@ -120,6 +120,26 @@ init`（`--no-git` 跳过），`--dir` 指定目标父目录。
 `examples/bootstrap-demo`）：整树拷贝（跳过 `.git`/`target`），并按模板
 Cargo.toml 的包名做 token 重命名（含下划线变体）；非文本文件字节级原样。
 
+### `rush testbed` —— 差分台架编排与报告摘要
+
+把 `backend/testbed/README` 的三步运行手册收敛成命令。**容器纪律**：Go 参照
+侧跑在 docker 差分栈里，rush 绝不代启——Go 端点不可达时直接报错并给出手动
+指令（`cd backend/testbed && docker compose up -d --build`）。
+
+```shell
+rush testbed run     # 构建 → 拉起 Rust 侧（:7788）→ 执行 admin-diff 回放 → 摘要报告
+rush testbed report  # 离线摘要一份 JSONL 报告（缺省 backend/testbed/reports/report.jsonl）
+```
+
+`run` 的编排：预检语料/豁免集/两侧 crate 在位 → Go 端点预检（不可达即停）→
+Rust 端点不可达则 `cargo build` 并拉起 admin-api、等待就绪 → 以仓内默认参数
+执行回放器（`--go/--rust/--corpus/--exemptions/--out`）→ 回收拉起的进程
+（`--keep-server` 保留）→ 透传回放器退出码并摘要报告。
+
+`report` 的摘要：verdict 直方图（Ok/Fail/Exempt/Pending/Unreachable）、
+class×verdict 矩阵、超豁免分歧（Fail）清单附分歧证据、不可达案例清单——
+评审差分报告不用再肉眼扫 JSONL。
+
 ## 仓库结构
 
 ```
@@ -140,7 +160,8 @@ rushwind-toolkit/
       repo + Handlers trait 实现 + 六处注册 + 清单重建）
 - [x] `rush new`：新项目脚手架（内嵌自包含模板 + 外部模板整树拷贝与包名
       重命名）
-- [ ] `rush testbed`：差分回归台架的 fixture 重建 / 全量路由 sweep 包装
+- [x] `rush testbed`：差分台架编排（构建/拉起/回放/回收，容器纪律：不碰
+      docker）+ JSONL 报告离线摘要
 - [ ] 前端页面生成：Vben / Element / React 三栈的页面脚手架（优先对接
       既有前端生成链，而非在 Rust 侧重写）
 

@@ -10,6 +10,7 @@ use rush_gen::adopt::{self, AdoptOptions, UpstreamBaseline};
 use rush_gen::entity::{self, EntityOptions, FieldKind, FieldSpec};
 use rush_gen::manifest::{self, CheckReport, Flavor};
 use rush_gen::project::{self, NewOptions};
+use rush_gen::testbed::{self, RunOptions};
 
 /// rush — RushWind 生态工具箱
 #[derive(Debug, Parser)]
@@ -79,10 +80,50 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// 差分台架编排（容器纪律：绝不代启 docker，Go 侧栈请按 testbed/README 手动启动）
+    Testbed {
+        #[command(subcommand)]
+        action: TestbedAction,
+    },
     /// 生成代码
     Gen {
         #[command(subcommand)]
         target: GenTarget,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TestbedAction {
+    /// 构建并拉起 Rust 侧，以仓内默认参数执行 admin-diff 回放，随后摘要报告。
+    /// Go 侧 docker 栈不可达时直接报错（不代启）。
+    Run {
+        /// rushwind-admin 仓库根目录
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// Go 参照侧端点
+        #[arg(long, default_value = testbed::DEFAULT_GO)]
+        go: String,
+        /// Rust 复刻侧端点
+        #[arg(long, default_value = testbed::DEFAULT_RUST)]
+        rust: String,
+        /// 拉起 Rust 侧后的就绪等待秒数
+        #[arg(long, default_value_t = 60)]
+        wait: u64,
+        /// 回放后保留拉起的 admin-api 进程
+        #[arg(long)]
+        keep_server: bool,
+        /// 跳过 cargo build（二进制已就绪时）
+        #[arg(long)]
+        skip_build: bool,
+    },
+    /// 摘要一份 JSONL 报告（verdict 直方图 + class 矩阵 + Fail/Unreachable 清单）
+    Report {
+        /// rushwind-admin 仓库根目录
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// 报告文件（缺省 backend/testbed/reports/report.jsonl）
+        #[arg(long)]
+        file: Option<PathBuf>,
     },
 }
 
@@ -215,6 +256,55 @@ fn run(cli: Cli) -> Result<()> {
             render_new(&report, dry_run);
             Ok(())
         }
+        Commands::Testbed { action } => match action {
+            TestbedAction::Run {
+                repo,
+                go,
+                rust,
+                wait,
+                keep_server,
+                skip_build,
+            } => {
+                let opts = RunOptions {
+                    repo_root: repo,
+                    go,
+                    rust,
+                    wait_secs: wait,
+                    keep_server,
+                    skip_build,
+                };
+                let report = testbed::run_rig(&opts).context("testbed run 失败")?;
+                if report.spawned_server {
+                    println!(
+                        "已拉起 Rust 侧 admin-api（回放{}）",
+                        if keep_server {
+                            "后保留"
+                        } else {
+                            "后回收"
+                        }
+                    );
+                }
+                if let Some(summary) = &report.summary {
+                    println!();
+                    render_summary(summary);
+                }
+                for note in &report.notes {
+                    println!("注意：{note}");
+                }
+                if report.exit_code != 0 {
+                    std::process::exit(report.exit_code);
+                }
+                Ok(())
+            }
+            TestbedAction::Report { repo, file } => {
+                let path =
+                    file.unwrap_or_else(|| repo.join("backend/testbed/reports/report.jsonl"));
+                let summary = testbed::summarize(&path).context("报告摘要失败")?;
+                println!("报告：{}", path.display());
+                render_summary(&summary);
+                Ok(())
+            }
+        },
         Commands::Gen {
             target:
                 GenTarget::Entity {
@@ -255,6 +345,40 @@ fn run(cli: Cli) -> Result<()> {
             render_gen(&report, dry_run);
             Ok(())
         }
+    }
+}
+
+fn render_summary(summary: &testbed::Summary) {
+    println!(
+        "总计 {} 案例：Ok {} / Fail {} / Exempt {} / Pending {} / Unreachable {}",
+        summary.total,
+        summary.count("Ok"),
+        summary.count("Fail"),
+        summary.count("Exempt"),
+        summary.count("Pending"),
+        summary.count("Unreachable")
+    );
+    if !summary.by_class.is_empty() {
+        println!("按 class：");
+        for (class, verdicts) in &summary.by_class {
+            let parts: Vec<String> = verdicts
+                .iter()
+                .map(|(verdict, count)| format!("{verdict} {count}"))
+                .collect();
+            println!("  {class}: {}", parts.join(", "));
+        }
+    }
+    if !summary.fails.is_empty() {
+        println!("Fail（超出豁免的分歧）：");
+        for entry in &summary.fails {
+            match &entry.detail {
+                Some(detail) => println!("  ! {} [{}] {}", entry.id, entry.class, detail),
+                None => println!("  ! {} [{}]", entry.id, entry.class),
+            }
+        }
+    }
+    if !summary.unreachable.is_empty() {
+        println!("Unreachable：{}", summary.unreachable.join(", "));
     }
 }
 

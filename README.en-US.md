@@ -38,7 +38,7 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
 | `rush manifest` | ✅ | Check / rebuild the sha256 manifests of the proto and react synced surfaces |
 | `rush gen entity` | ✅ | Generate the full backend chain of a domain entity |
 | `rush new` | ✅ | Scaffold a new project that compiles and runs with plain `cargo run` |
-| `rush testbed` | Planned | Wrapper for the admin-diff differential regression bench (sweep/fixture) |
+| `rush testbed` | ✅ | Differential-rig orchestration and report summaries (never starts docker) |
 
 ### `rush adopt` — downstream takeover (step one of secondary development)
 
@@ -145,6 +145,31 @@ repo's `examples/bootstrap-demo`): the tree copies wholesale (skipping
 token-renamed (underscore variant included); non-text files pass
 through byte-exact.
 
+### `rush testbed` — differential-rig orchestration and report summaries
+
+Collapses the three-step run book in `backend/testbed/README` into
+commands. **Container discipline**: the Go reference side runs in the
+docker differential stack, and rush never starts it — when the Go
+endpoint is unreachable it fails immediately with the manual
+instructions (`cd backend/testbed && docker compose up -d --build`).
+
+```shell
+rush testbed run     # build → start the Rust side (:7788) → replay via admin-diff → summarize
+rush testbed report  # offline summary of a JSONL report (default backend/testbed/reports/report.jsonl)
+```
+
+What `run` orchestrates: preflight the corpus/exemptions/both crates →
+probe the Go endpoint (stop if down) → if the Rust endpoint is down,
+`cargo build` and start admin-api, wait for readiness → run the replayer
+with the repo's default arguments (`--go/--rust/--corpus/--exemptions/--out`)
+→ tear down the spawned process (`--keep-server` keeps it) → pass the
+replayer's exit code through and summarize the report.
+
+What `report` summarizes: the verdict histogram
+(Ok/Fail/Exempt/Pending/Unreachable), the class×verdict matrix, the
+beyond-exemption divergences (Fail) with their evidence, and the
+unreachable case list — no more eyeballing raw JSONL.
+
 ## Repository layout
 
 ```
@@ -166,8 +191,9 @@ leaning Tauri) reuses `rush-gen` directly without going through the CLI.
       registrations + manifest rebuild)
 - [x] `rush new`: project scaffold (embedded self-contained template +
       external template copy with package-name renaming)
-- [ ] `rush testbed`: wrapper for the differential regression bench
-      (fixture rebuild / full-route sweep)
+- [x] `rush testbed`: differential-rig orchestration
+      (build/start/replay/teardown, container discipline: no docker) +
+      offline JSONL report summaries
 - [ ] Frontend page generation: page scaffolds for the Vben / Element /
       React stacks (prefer integrating with the existing frontend
       generation chain rather than rewriting it in Rust)
