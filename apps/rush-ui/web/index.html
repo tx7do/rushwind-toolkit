@@ -5,58 +5,134 @@
   <title>RushWind 工具箱</title>
   <style>
     :root {
-      --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea;
-      --text: #1f2329; --muted: #6b7280; --accent: #2f6fed;
-      --ok: #16a34a; --err: #dc2626;
+      --bg: #f4f6f9; --panel: #ffffff; --line: #e4e8ee; --line-strong: #cfd6e0;
+      --text: #1c2330; --muted: #67707f; --accent: #2f6fed; --accent-soft: #e8effd;
+      --ok: #16a34a; --ok-soft: #e7f6ec; --err: #dc2626; --err-soft: #fdecec;
+      --warn: #b45309; --warn-soft: #fdf3e3; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     }
     * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       margin: 0; font: 14px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      background: var(--bg); color: var(--text);
+      background: var(--bg); color: var(--text); display: flex; flex-direction: column;
     }
-    header { padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+    header {
+      padding: 14px 22px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; gap: 12px;
+    }
+    header .logo { width: 34px; height: 34px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; flex: none; }
     header h1 { margin: 0; font-size: 16px; }
-    header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
-    nav { display: flex; gap: 4px; padding: 10px 20px 0; }
+    header p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
+    nav { display: flex; gap: 4px; padding: 10px 22px 0; }
     nav button {
-      border: 1px solid var(--line); background: var(--panel); padding: 7px 16px;
-      border-radius: 8px 8px 0 0; cursor: pointer; color: var(--muted); font-size: 13px;
+      border: 1px solid var(--line); border-bottom: 0; background: #eef1f6; padding: 8px 18px;
+      border-radius: 9px 9px 0 0; cursor: pointer; color: var(--muted); font-size: 13px;
     }
-    nav button.active { color: var(--accent); border-bottom-color: var(--panel); font-weight: 600; }
-    main { padding: 16px 20px 24px; }
-    section.panel { display: none; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+    nav button.active { background: var(--panel); color: var(--accent); font-weight: 600; }
+    main { flex: 1; overflow: auto; padding: 16px 22px 26px; }
+    section.panel { display: none; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; max-width: 1060px; }
     section.panel.active { display: block; }
+    h2.sec { font-size: 13px; color: var(--muted); font-weight: 600; margin: 18px 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+    h2.sec:first-child { margin-top: 0; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
-    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
-    input[type=text], textarea, select {
-      width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+    label.lbl { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+    input[type=text], input[type=number], textarea, select {
+      width: 100%; border: 1px solid var(--line-strong); border-radius: 7px; padding: 7px 10px;
       font: inherit; background: #fff; color: var(--text);
     }
-    textarea { min-height: 96px; resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
-    .checks { display: flex; gap: 18px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+    input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+    input.mono, textarea.mono { font-family: var(--mono); font-size: 13px; }
+    textarea { min-height: 96px; resize: vertical; }
+    .checks { display: flex; gap: 18px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
     .checks label { display: flex; gap: 6px; align-items: center; color: var(--text); font-size: 13px; margin: 0; }
-    .row { margin-top: 14px; display: flex; gap: 10px; align-items: center; }
+    .row { margin-top: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     button.primary {
-      background: var(--accent); color: #fff; border: 0; border-radius: 6px;
-      padding: 8px 22px; cursor: pointer; font-size: 14px;
+      background: var(--accent); color: #fff; border: 0; border-radius: 7px;
+      padding: 8px 24px; cursor: pointer; font-size: 14px;
     }
+    button.primary:hover:not(:disabled) { filter: brightness(1.06); }
     button.primary:disabled { opacity: .55; cursor: wait; }
-    #status { font-size: 13px; }
-    #status.ok { color: var(--ok); }
-    #status.err { color: var(--err); }
-    pre#report {
-      margin: 14px 0 0; background: #0f1115; color: #d6deeb; border-radius: 8px;
-      padding: 14px; max-height: 320px; overflow: auto; font-size: 12px; line-height: 1.55;
-      display: none; white-space: pre-wrap; word-break: break-all;
+    button.ghost {
+      background: #fff; color: var(--accent); border: 1px solid var(--accent);
+      border-radius: 7px; padding: 5px 12px; cursor: pointer; font-size: 12px;
     }
-    .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
     .full { grid-column: 1 / -1; }
+    code { font-family: var(--mono); font-size: 12px; background: #f2f4f8; padding: 1px 5px; border-radius: 4px; }
+
+    /* 仓库探测芯片 */
+    .probe { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 8px; min-height: 26px; }
+    .chip {
+      font-size: 12px; border-radius: 999px; padding: 2px 10px; border: 1px solid var(--line);
+      background: #f2f4f8; color: var(--muted);
+    }
+    .chip.on { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+    .chip.off { background: var(--err-soft); color: var(--err); border-color: transparent; }
+    .chip.spec { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+    /* 字段编辑器 */
+    .field-editor { display: flex; flex-direction: column; gap: 8px; }
+    .field-row { display: grid; grid-template-columns: 1fr 150px 34px; gap: 8px; align-items: center; }
+    .field-row .f-del {
+      border: 1px solid var(--line); background: #fff; border-radius: 7px; height: 34px;
+      cursor: pointer; color: var(--err); font-size: 14px;
+    }
+    .enum-editor {
+      border: 1px dashed var(--line-strong); border-radius: 8px;
+      padding: 10px 12px; background: #fafbfd; display: flex; flex-direction: column; gap: 6px;
+    }
+    .enum-head { font-size: 12px; color: var(--muted); }
+    .enum-row { display: grid; grid-template-columns: 90px 1fr 34px; gap: 8px; }
+    .enum-row input.num { font-family: var(--mono); }
+    .enum-row .v-del { border: 1px solid var(--line); background: #fff; border-radius: 6px; cursor: pointer; color: var(--err); }
+    .enum-foot { display: flex; gap: 12px; align-items: center; }
+    .enum-foot label { margin: 0; font-size: 12px; color: var(--muted); }
+    .enum-foot select { width: auto; }
+    button.linkish { border: 0; background: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 2px 4px; }
+
+    /* 报告区 */
+    .status { font-size: 13px; font-weight: 600; }
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--err); }
+    .banner { border-radius: 8px; padding: 9px 12px; font-size: 13px; margin-top: 12px; display: flex; gap: 8px; align-items: center; }
+    .banner.ok { background: var(--ok-soft); color: var(--ok); }
+    .banner.dry { background: var(--warn-soft); color: var(--warn); }
+    .banner.err { background: var(--err-soft); color: var(--err); white-space: pre-wrap; word-break: break-all; display: block; }
+    .report { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .report .card { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+    .report .card > .head {
+      padding: 7px 12px; background: #f6f8fb; font-size: 12px; font-weight: 600; color: var(--muted);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .report .card > .head .count { color: var(--accent); }
+    .report .card ul { margin: 0; padding: 8px 12px 10px 26px; }
+    .report .card li { font-family: var(--mono); font-size: 12px; margin: 2px 0; word-break: break-all; }
+    .report .card li.created::marker { content: "+ "; color: var(--ok); }
+    .report .card li.edited::marker { content: "~ "; color: var(--warn); }
+    .report .card.notes ul { font-family: inherit; font-size: 13px; }
+    .report .card.notes li::marker { content: "💡 "; }
+    .badge { border-radius: 999px; padding: 1px 10px; font-size: 12px; }
+    .badge.ok { background: var(--ok-soft); color: var(--ok); }
+    .badge.err { background: var(--err-soft); color: var(--err); }
+    details.raw { margin-top: 4px; }
+    details.raw summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+    details.raw pre {
+      background: #0f1115; color: #d6deeb; border-radius: 8px; padding: 12px;
+      max-height: 260px; overflow: auto; font-size: 12px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .handoff { display: none; }
   </style>
 </head>
 <body>
   <header>
-    <h1>RushWind 工具箱</h1>
-    <p>同进程直调 rush-gen —— 接管 · 清单 · 脚手架 · 实体链 · 页面组</p>
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 128 128"><polygon points="72,8 40,68 60,68 52,120 88,56 66,56 84,8" fill="#fff"/></svg>
+    </div>
+    <div>
+      <h1>RushWind 工具箱</h1>
+      <p>同进程直调 rush-gen —— 接管 · 清单 · 脚手架 · 实体链 · 三栈页面</p>
+    </div>
   </header>
 
   <nav>
@@ -70,18 +146,39 @@
   <main>
     <!-- 实体链 -->
     <section class="panel active" id="tab-entity">
+      <h2 class="sec">目标仓库</h2>
       <div class="grid">
-        <div><label>仓库根目录（rushwind-admin）</label><input type="text" id="e-repo" placeholder="/home/you/Github/rushwind-admin" /></div>
-        <div><label>实体名（snake_case 单数）</label><input type="text" id="e-name" placeholder="widget" /></div>
         <div class="full">
-          <label>业务字段（每行一个 name:kind；kind ∈ string|i32|u32|bool|f64|enum(0=A,1=B@default=B)）</label>
-          <textarea id="e-fields" placeholder="code:string&#10;quantity:u32&#10;state:enum(0=OFF,1=ON@default=OFF)"></textarea>
+          <label class="lbl">仓库根目录（rushwind-admin）</label>
+          <input type="text" id="e-repo" class="mono" placeholder="/home/you/Github/rushwind-admin" />
+          <div class="probe" id="e-probe"></div>
         </div>
-        <div><label>唯一编码字段（可选，须为 string）</label><input type="text" id="e-code" placeholder="code" /></div>
-        <div><label>路由前缀（可选，缺省 /admin/v1/&lt;复数&gt;）</label><input type="text" id="e-route" placeholder="/admin/v1/widgets" /></div>
-        <div><label>表名（可选，缺省 sys_&lt;复数&gt;）</label><input type="text" id="e-table" placeholder="sys_widgets" /></div>
-        <div><label>消息面 package（可选，缺省 &lt;name&gt;.service.v1）</label><input type="text" id="e-package" placeholder="widget.service.v1" /></div>
+        <div>
+          <label class="lbl">实体名（snake_case 单数）</label>
+          <input type="text" id="e-name" class="mono" placeholder="widget" />
+        </div>
+        <div>
+          <label class="lbl">唯一编码字段（code 臂 + /code/{code} 路由，须为 string 字段）</label>
+          <select id="e-code"><option value="">（无）</option></select>
+        </div>
       </div>
+
+      <h2 class="sec">业务字段</h2>
+      <div class="field-editor" id="e-fields-editor"></div>
+      <div class="row" style="margin-top: 8px;">
+        <button class="ghost" id="e-add-field">＋ 添加字段</button>
+        <span class="hint" style="margin: 0;">生成成功后字段真相落成 <code>.rush/&lt;name&gt;.json</code>，gen pages 免重输</span>
+      </div>
+
+      <details id="e-advanced" style="margin-top: 16px;">
+        <summary class="hint" style="cursor: pointer;">高级选项（表名 / package / 路由前缀，缺省自动）</summary>
+        <div class="grid" style="margin-top: 10px;">
+          <div><label class="lbl">表名（缺省 sys_&lt;复数&gt;）</label><input type="text" id="e-table" class="mono" placeholder="sys_widgets" /></div>
+          <div><label class="lbl">消息面 package（缺省 &lt;name&gt;.service.v1）</label><input type="text" id="e-package" class="mono" placeholder="widget.service.v1" /></div>
+          <div class="full"><label class="lbl">路由前缀（缺省 /admin/v1/&lt;复数&gt;）</label><input type="text" id="e-route" class="mono" placeholder="/admin/v1/widgets" /></div>
+        </div>
+      </details>
+
       <div class="checks">
         <label><input type="checkbox" id="e-global" /> 平台全局表（--global）</label>
         <label><input type="checkbox" id="e-check" /> 生成后 cargo check</label>
@@ -89,33 +186,44 @@
       </div>
       <div class="row">
         <button class="primary" id="e-run">生成</button>
+        <button class="ghost" id="e-goto-pages" style="display: none;">带字段去 gen pages →</button>
         <span id="e-status" class="status"></span>
       </div>
-      <p class="hint">生成成功后字段真相落成 .rush/&lt;name&gt;.json —— gen pages 免重输字段。</p>
-      <pre id="e-report"></pre>
+      <div id="e-result"></div>
     </section>
 
     <!-- 页面组 -->
     <section class="panel" id="tab-pages">
+      <div class="banner dry handoff" id="p-handoff">
+        <span id="p-handoff-text" style="flex: 1;"></span>
+        <button class="ghost" id="p-handoff-load">载入</button>
+      </div>
+      <h2 class="sec">目标</h2>
       <div class="grid">
-        <div><label>仓库根目录（rushwind-admin）</label><input type="text" id="p-repo" placeholder="/home/you/Github/rushwind-admin" /></div>
-        <div><label>实体名（须与 gen entity 一致）</label><input type="text" id="p-name" placeholder="widget" /></div>
+        <div><label class="lbl">仓库根目录（rushwind-admin）</label><input type="text" id="p-repo" class="mono" placeholder="/home/you/Github/rushwind-admin" /><div class="probe" id="p-probe"></div></div>
+        <div><label class="lbl">实体名（须与 gen entity 一致）</label><input type="text" id="p-name" class="mono" placeholder="widget" /></div>
         <div>
-          <label>目标前端栈</label>
+          <label class="lbl">目标前端栈</label>
           <select id="p-stack">
             <option value="react">react（菜单走后端 seed）</option>
             <option value="vben">vue-vben（静态路由模块）</option>
             <option value="element">vue-element（静态路由模块）</option>
           </select>
         </div>
-        <div><label>页面分组（缺省 system）</label><input type="text" id="p-group" placeholder="system" /></div>
-        <div><label>路由前缀（可选，缺省继承规格）</label><input type="text" id="p-route" placeholder="/admin/v1/widgets" /></div>
-        <div class="full">
-          <label>业务字段（留空 = 从 .rush/&lt;name&gt;.json 规格继承，推荐）</label>
-          <textarea id="p-fields" placeholder="留空继承规格文件；或每行一个 name:kind 显式覆盖"></textarea>
-        </div>
-        <div><label>唯一编码字段（可选，缺省继承规格）</label><input type="text" id="p-code" placeholder="code" /></div>
+        <div><label class="lbl">页面分组（缺省 system）</label><input type="text" id="p-group" class="mono" placeholder="system" /></div>
+        <div><label class="lbl">唯一编码字段（可选，缺省继承规格）</label><input type="text" id="p-code" class="mono" placeholder="code" /></div>
+        <div><label class="lbl">路由前缀（可选，缺省继承规格）</label><input type="text" id="p-route" class="mono" placeholder="/admin/v1/widgets" /></div>
       </div>
+
+      <h2 class="sec">字段</h2>
+      <div class="checks" style="margin-top: 0;">
+        <label><input type="checkbox" id="p-explicit" /> 显式指定字段（缺省从 .rush/&lt;name&gt;.json 规格继承，推荐）</label>
+      </div>
+      <div id="p-fields-editor-wrap" style="display: none; margin-top: 8px;">
+        <div class="field-editor" id="p-fields-editor"></div>
+        <div class="row" style="margin-top: 8px;"><button class="ghost" id="p-add-field">＋ 添加字段</button></div>
+      </div>
+
       <div class="checks">
         <label><input type="checkbox" id="p-dry" checked /> dry-run 预览（不落盘）</label>
       </div>
@@ -123,23 +231,22 @@
         <button class="primary" id="p-run">生成</button>
         <span id="p-status" class="status"></span>
       </div>
-      <p class="hint">react：页面组 + 双语 locale + seed.rs 菜单种子；vben / element：composables + 页面链 + 前端静态路由模块（菜单=路由条目）。</p>
-      <pre id="p-report"></pre>
+      <div id="p-result"></div>
     </section>
 
     <!-- 新项目 -->
     <section class="panel" id="tab-new">
       <div class="grid">
-        <div><label>项目名（= crate 名 + 目录名）</label><input type="text" id="n-name" placeholder="my-service" /></div>
-        <div><label>目标父目录</label><input type="text" id="n-dir" placeholder="." /></div>
+        <div><label class="lbl">项目名（= crate 名 + 目录名）</label><input type="text" id="n-name" class="mono" placeholder="my-service" /></div>
+        <div><label class="lbl">目标父目录</label><input type="text" id="n-dir" class="mono" placeholder="." /></div>
         <div>
-          <label>存储变体</label>
+          <label class="lbl">存储变体</label>
           <select id="n-storage">
             <option value="Memory">内存（开箱即跑）</option>
             <option value="Postgres">PostgreSQL</option>
           </select>
         </div>
-        <div><label>外部模板目录（可选，缺省内嵌模板）</label><input type="text" id="n-template" placeholder="留空用内嵌模板" /></div>
+        <div><label class="lbl">外部模板目录（可选，缺省内嵌模板）</label><input type="text" id="n-template" class="mono" placeholder="留空用内嵌模板" /></div>
       </div>
       <div class="checks">
         <label><input type="checkbox" id="n-git" checked /> git init</label>
@@ -149,13 +256,13 @@
         <button class="primary" id="n-run">创建</button>
         <span id="n-status" class="status"></span>
       </div>
-      <pre id="n-report"></pre>
+      <div id="n-result"></div>
     </section>
 
     <!-- 接管 -->
     <section class="panel" id="tab-adopt">
       <div class="grid">
-        <div><label>仓库根目录（rushwind-admin 快照）</label><input type="text" id="a-repo" placeholder="/home/you/Github/rushwind-admin" /></div>
+        <div class="full"><label class="lbl">仓库根目录（rushwind-admin 快照）</label><input type="text" id="a-repo" class="mono" placeholder="/home/you/Github/rushwind-admin" /></div>
       </div>
       <div class="checks">
         <label><input type="checkbox" id="a-dry" checked /> dry-run 预览</label>
@@ -167,15 +274,15 @@
         <button class="primary" id="a-run">接管</button>
         <span id="a-status" class="status"></span>
       </div>
-      <pre id="a-report"></pre>
+      <div id="a-result"></div>
     </section>
 
     <!-- 清单 -->
     <section class="panel" id="tab-manifest">
       <div class="grid">
-        <div><label>仓库根目录</label><input type="text" id="m-repo" placeholder="/home/you/Github/rushwind-admin" /></div>
+        <div><label class="lbl">仓库根目录</label><input type="text" id="m-repo" class="mono" placeholder="/home/you/Github/rushwind-admin" /></div>
         <div>
-          <label>同步面</label>
+          <label class="lbl">同步面</label>
           <select id="m-flavor">
             <option value="Proto">proto 契约面</option>
             <option value="React">react 前端快照面</option>
@@ -184,10 +291,10 @@
       </div>
       <div class="row">
         <button class="primary" id="m-check">校验</button>
-        <button class="primary" id="m-rebuild" style="background: #6b7280;">重建基线</button>
+        <button class="primary" id="m-rebuild" style="background: #67707f;">重建基线</button>
         <span id="m-status" class="status"></span>
       </div>
-      <pre id="m-report"></pre>
+      <div id="m-result"></div>
     </section>
   </main>
 
