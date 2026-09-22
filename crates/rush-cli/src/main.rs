@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use rush_gen::adopt::{self, AdoptOptions, UpstreamBaseline};
+use rush_gen::entity::{self, EntityOptions, FieldKind, FieldSpec};
 use rush_gen::manifest::{self, CheckReport, Flavor};
 
 /// rush — RushWind 生态工具箱
@@ -64,7 +65,7 @@ enum Commands {
         #[arg(value_name = "NAME")]
         name: String,
     },
-    /// [规划中] 生成领域实体链
+    /// 生成代码
     Gen {
         #[command(subcommand)]
         target: GenTarget,
@@ -73,12 +74,35 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum GenTarget {
-    /// 生成一个领域实体的后端全链（proto 模板 / SeaORM 实体 / migration /
-    /// repo / service 骨架）
+    /// 生成一个标准 CRUD 实体的后端全链：消息面 proto + admin HTTP 注解面
+    /// proto + SeaORM 实体 + repo（repo_shell! 宏）+ Handlers trait 实现 +
+    /// data/migration/repos/services/mount 五处注册 + proto MANIFEST 重建。
+    /// 模板基准：rushwind-admin 的 dict_type 实体链。
     Entity {
-        /// 实体名（snake_case）
+        /// 实体名，snake_case 单数（如 widget）
         #[arg(value_name = "NAME")]
         name: String,
+        /// 仓库根目录
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// 表名（缺省 sys_<复数>）
+        #[arg(long)]
+        table: Option<String>,
+        /// 消息面 package（缺省 <name>.service.v1）
+        #[arg(long)]
+        package: Option<String>,
+        /// 路由前缀（缺省 /admin/v1/<复数>）
+        #[arg(long)]
+        route_prefix: Option<String>,
+        /// 业务字段，格式 name:kind，kind ∈ string|i32|u32|bool|f64；可重复
+        #[arg(long = "field", value_name = "NAME:KIND")]
+        fields: Vec<String>,
+        /// 只报告不落盘
+        #[arg(long)]
+        dry_run: bool,
+        /// 跳过 proto MANIFEST 重建
+        #[arg(long)]
+        skip_manifest: bool,
     },
 }
 
@@ -159,8 +183,76 @@ fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Commands::New { .. } | Commands::Gen { .. } => {
-            bail!("该命令尚未实现（路线图见 README）；当前可用：rush adopt / rush manifest");
+        Commands::New { .. } => {
+            bail!("该命令尚未实现（路线图见 README）；当前可用：rush adopt / rush manifest / rush gen entity");
+        }
+        Commands::Gen {
+            target:
+                GenTarget::Entity {
+                    name,
+                    repo,
+                    table,
+                    package,
+                    route_prefix,
+                    fields,
+                    dry_run,
+                    skip_manifest,
+                },
+        } => {
+            let mut parsed = Vec::with_capacity(fields.len());
+            for spec in &fields {
+                let Some((fname, kind)) = spec.rsplit_once(':') else {
+                    bail!("字段格式应为 name:kind（如 code:string）：{spec}");
+                };
+                let Some(kind) = FieldKind::parse(kind) else {
+                    bail!("未知字段类型 {kind}（支持 string|i32|u32|bool|f64）：{spec}");
+                };
+                parsed.push(FieldSpec {
+                    name: fname.to_owned(),
+                    kind,
+                });
+            }
+            let opts = EntityOptions {
+                repo_root: repo,
+                name,
+                table,
+                package,
+                route_prefix,
+                fields: parsed,
+                dry_run,
+                skip_manifest,
+            };
+            let report = entity::generate_entity(&opts).context("gen entity 失败")?;
+            render_gen(&report, dry_run);
+            Ok(())
+        }
+    }
+}
+
+fn render_gen(report: &entity::EntityReport, dry_run: bool) {
+    let tag = if dry_run { "[dry-run] " } else { "" };
+    if !report.created.is_empty() {
+        println!("{tag}新建文件：");
+        for path in &report.created {
+            println!("  + {}", path.display());
+        }
+    }
+    if !report.edited.is_empty() {
+        println!("{tag}编辑文件：");
+        for path in &report.edited {
+            println!("  ~ {}", path.display());
+        }
+    }
+    for item in &report.skipped {
+        println!("  = 跳过 {item}");
+    }
+    if let Some(count) = report.manifest_entries {
+        println!("{tag}proto MANIFEST：{count} 条");
+    }
+    if !report.notes.is_empty() {
+        println!();
+        for note in &report.notes {
+            println!("注意：{note}");
         }
     }
 }

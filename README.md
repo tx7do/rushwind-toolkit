@@ -23,7 +23,7 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
 |---|---|---|
 | `rush adopt` | ✅ | 把 rushwind-admin 快照从“上游镜像”接管为下游自有仓 |
 | `rush manifest` | ✅ | 校验 / 重建 proto 与 react 两个同步面的 sha256 清单 |
-| `rush gen entity` | 规划中 | 领域实体后端全链生成 |
+| `rush gen entity` | ✅ | 领域实体后端全链生成 |
 | `rush new` | 规划中 | 从模板创建新项目 |
 | `rush testbed` | 规划中 | admin-diff 差分回归台架的 sweep/fixture 包装 |
 
@@ -65,13 +65,45 @@ rush manifest proto             # 默认只校验（只读）
 字节级哈希，要求在 git 工作树内执行。校验按内容映射比较，对行序不敏感，
 对未接管的仓库做只读校验同样准确。
 
+### `rush gen entity` —— 领域实体后端全链生成
+
+为一个标准 CRUD 实体生成 rushwind-admin 的整条后端链（模板基准：仓内最小的
+dict_type 实体链），一次命令拿到可编译的骨架：
+
+```shell
+rush gen entity widget \
+  --field code:string --field quantity:u32 --field is_active:bool
+```
+
+生成物：
+
+- 消息面 proto：`backend/api/protos/widget/service/v1/widget.proto`
+- admin HTTP 注解面 proto：`backend/api/protos/admin/service/v1/i_widget.proto`
+  （List/Get/Create/Update/Delete 五条路由，前缀缺省 `/admin/v1/widgets`）
+- SeaORM 实体：`backend/services/admin-api/src/data/sys_widgets.rs`
+- repo（`repo_shell!` 宏 + 租户作用域批量删除）：
+  `backend/services/admin-api/src/data/repos/widget.rs`
+- service 实现（对齐 rushwind-gen-http 生成的 Handlers trait）：
+  `backend/services/admin-api/src/services/widget.rs`
+- 五处注册（行级手术插入，幂等）：`data.rs` / `migration.rs` /
+  `data/repos/mod.rs` / `services.rs` / `server/rest.rs`（use 导入块 +
+  mount 表）
+- proto MANIFEST 自动重建（`--skip-manifest` 跳过）
+
+字段类型 `string|i32|u32|bool|f64`；标准列（id / tenant_id / sort_order /
+审计人与时间戳）自动带上。生成后 `cargo check` 即绿（在真实 rushwind-admin
+上以 gizmo 实体验证过），建议顺手 `cargo fmt`。
+
+`--dry-run` 预览全部动作不落盘。已部署库的说明与 seed / 前端 / testbed 等
+后续手动步骤见命令输出的提示。
+
 ## 仓库结构
 
 ```
 rushwind-toolkit/
 ├── crates/
 │   ├── rush-cli/     # `rush` 可执行入口（clap 命令面）
-│   └── rush-gen/     # 核心库：清单双算法 + adopt；规划中的生成器也住这里
+│   └── rush-gen/     # 核心库：清单双算法 + adopt + 实体链生成
 └── ...
 ```
 
@@ -81,10 +113,8 @@ rushwind-toolkit/
 ## 路线图
 
 - [x] `rush adopt` / `rush manifest`
-- [ ] `rush gen entity`：领域实体后端全链生成——proto 模板（带正确的 http
-      注解）+ SeaORM 实体 + migration 段 + repo + service 骨架（对齐
-      rushwind-gen-http 生成的 trait 签名）+ mount 表注册 + testbed 占位；
-      实体定义可借力 sea-orm-cli
+- [x] `rush gen entity`：领域实体后端全链生成（proto 双面 + SeaORM 实体 +
+      repo + Handlers trait 实现 + 六处注册 + 清单重建）
 - [ ] `rush new`：从模板起项目（rushwind examples + rushwind-bootstrap
       YAML 组装的模板化）
 - [ ] `rush testbed`：差分回归台架的 fixture 重建 / 全量路由 sweep 包装

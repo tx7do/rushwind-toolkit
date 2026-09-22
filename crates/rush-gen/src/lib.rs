@@ -10,6 +10,7 @@
 //! repo / service 骨架，见 rushwind-toolkit README 路线图）。
 
 pub mod adopt;
+pub mod entity;
 pub mod manifest;
 
 use std::io;
@@ -20,6 +21,8 @@ use std::path::PathBuf;
 pub enum Error {
     #[error("io: {0}")]
     Io(#[from] io::Error),
+    #[error("输入非法: {0}")]
+    InvalidInput(String),
     #[error("清单树不存在: {0}")]
     TreeMissing(PathBuf),
     #[error("清单文件缺失: {0}（先执行 rebuild）")]
