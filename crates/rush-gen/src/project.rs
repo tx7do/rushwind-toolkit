@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::{Error, Result};
@@ -19,7 +20,7 @@ use crate::{Error, Result};
 pub const PINNED_RUSHWIND_REV: &str = "2bc3a96c742539a195b608b995be1c3bcc1545a3";
 
 /// 内嵌模板的存储变体。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StorageKind {
     /// 内存存储（开箱即跑，无需任何服务）。
     #[default]
@@ -29,7 +30,7 @@ pub enum StorageKind {
 }
 
 /// `rush new` 选项。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewOptions {
     /// 项目名（= crate 名 + 目录名）。
     pub name: String,
@@ -46,7 +47,7 @@ pub struct NewOptions {
 }
 
 /// 生成结果报告。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct NewReport {
     pub project_dir: PathBuf,
     pub files: Vec<PathBuf>,

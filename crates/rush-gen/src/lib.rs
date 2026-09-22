@@ -4,16 +4,16 @@
 //!   快照）的 sha256 清单构建、解析、校验与重建，算法逐字对齐被替换的
 //!   shell 脚本；
 //! * [`adopt`]：下游接管——以当前树为基线重建清单，并从 CI 剥离上游
-//!   镜像门禁步。
-//!
-//! 规划中：领域实体链生成（proto 模板 / SeaORM 实体 / migration /
-//! repo / service 骨架，见 rushwind-toolkit README 路线图）。
+//!   镜像门禁步；
+//! * [`spec`]：实体规格文件（`.rush/<name>.json`）——字段清单的唯一
+//!   真相，gen entity 落盘、gen pages 读取，UI 表单回填的数据源。
 
 pub mod adopt;
 pub mod entity;
 pub mod manifest;
 pub mod pages;
 pub mod project;
+pub mod spec;
 pub mod testbed;
 
 use std::io;

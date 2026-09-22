@@ -151,10 +151,11 @@ enum GenTarget {
         /// 路由前缀（须与 gen entity 一致，缺省 /admin/v1/<复数>）
         #[arg(long)]
         route_prefix: Option<String>,
-        /// 业务字段，语法同 gen entity --field；可重复
+        /// 业务字段，语法同 gen entity --field；可重复。缺省时读取
+        /// .rush/<name>.json 规格文件（gen entity 落盘的字段真相）
         #[arg(long = "field", value_name = "NAME:KIND")]
         fields: Vec<String>,
-        /// 唯一编码字段（抽屉必填 + 搜索列）
+        /// 唯一编码字段（抽屉必填 + 搜索列）；缺省继承规格文件
         #[arg(long, value_name = "FIELD")]
         code_field: Option<String>,
         /// 只报告不落盘
@@ -163,7 +164,8 @@ enum GenTarget {
     },
     /// 生成一个标准 CRUD 实体的后端全链：消息面 proto + admin HTTP 注解面
     /// proto + SeaORM 实体 + repo（repo_shell! 宏）+ Handlers trait 实现 +
-    /// data/migration/repos/services/mount 五处注册 + proto MANIFEST 重建。
+    /// data/migration/repos/services/mount 五处注册 + proto MANIFEST 重建，
+    /// 并把字段清单落成 .rush/<name>.json 规格文件（gen pages 的默认输入）。
     /// 模板基准：rushwind-admin 的 dict_type 实体链。
     Entity {
         /// 实体名，snake_case 单数（如 widget）

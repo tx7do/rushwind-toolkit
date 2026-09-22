@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
@@ -29,7 +29,7 @@ const REPLAYER: &str = "admin-diff";
 const SERVER: &str = "admin-api";
 
 /// `rush testbed run` 选项。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunOptions {
     /// rushwind-admin 仓库根目录。
     pub repo_root: PathBuf,
@@ -46,7 +46,7 @@ pub struct RunOptions {
 }
 
 /// `rush testbed run` 结果。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct RunReport {
     /// 本次是否拉起了 admin-api（false = 复用已在运行的实例）。
     pub spawned_server: bool,
@@ -216,7 +216,7 @@ pub fn endpoint_up(url: &str) -> bool {
 // ---- 报告摘要 ----
 
 /// 一行报告（只取摘要关心的字段）。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ReportEntry {
     pub id: String,
     pub class: String,
@@ -227,7 +227,7 @@ pub struct ReportEntry {
 }
 
 /// 报告摘要：verdict 直方图 + class×verdict 矩阵 + Fail/Unreachable 清单。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Summary {
     pub total: usize,
     pub by_verdict: BTreeMap<String, usize>,

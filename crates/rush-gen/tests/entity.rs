@@ -79,7 +79,7 @@ fn generates_files_and_edits_all_registration_points() {
     let src = root.join("backend/services/admin-api/src");
 
     let report = entity::generate_entity(&opts(&root)).unwrap();
-    assert_eq!(report.created.len(), 5, "{report:#?}");
+    assert_eq!(report.created.len(), 6, "{report:#?}");
     assert_eq!(report.edited.len(), 5, "{report:#?}");
     assert!(report.skipped.is_empty());
 
@@ -93,6 +93,25 @@ fn generates_files_and_edits_all_registration_points() {
     assert!(src.join("data/sys_widgets.rs").exists());
     assert!(src.join("data/repos/widget.rs").exists());
     assert!(src.join("services/widget.rs").exists());
+
+    // 规格文件：解析值落定 + kind 规格串，gen pages/UI 回填的唯一真相
+    let spec: rush_gen::spec::EntitySpecFile =
+        serde_json::from_str(&fs::read_to_string(root.join(".rush/widget.json")).unwrap()).unwrap();
+    assert_eq!(spec.schema, 1);
+    assert_eq!(spec.table, "sys_widgets");
+    assert_eq!(spec.route_prefix, "/admin/v1/widgets");
+    assert_eq!(spec.code_field.as_deref(), Some("code"));
+    assert!(!spec.global);
+    assert!(spec.group.is_none(), "group 由 gen pages 写回");
+    let kind_of = |name: &str| {
+        spec.fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| field.kind.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(kind_of("code"), "string");
+    assert_eq!(kind_of("quantity"), "u32");
 
     // data.rs：单行 pub mod 注册，按字节序落位（scope < sys_widgets < repos 尾部）
     let data_rs = fs::read_to_string(src.join("data.rs")).unwrap();
@@ -157,8 +176,10 @@ fn dry_run_writes_nothing() {
     options.dry_run = true;
     let report = entity::generate_entity(&options).unwrap();
 
-    assert_eq!(report.created.len(), 5);
+    assert_eq!(report.created.len(), 6);
     assert_eq!(report.edited.len(), 5);
+    assert!(!root.join("backend/api/protos/widget").exists());
+    assert!(!root.join(".rush/widget.json").exists(), "dry-run 不落规格");
     assert!(!root.join("backend/api/protos/widget").exists());
     assert!(!root
         .join("backend/services/admin-api/src/data/sys_widgets.rs")

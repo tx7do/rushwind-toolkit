@@ -14,11 +14,13 @@
 use std::fs;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::entity::{camel_of, is_snake, pascal_of, plural_of, FieldKind, FieldSpec};
 use crate::{Error, Result};
 
 /// `rush gen pages` 选项。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PagesOptions {
     /// rushwind-admin 仓库根目录。
     pub repo_root: PathBuf,
@@ -37,7 +39,7 @@ pub struct PagesOptions {
 }
 
 /// 生成结果报告。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct PagesReport {
     pub created: Vec<PathBuf>,
     /// 手术插入的既有文件（seed.rs）。
@@ -55,19 +57,40 @@ struct PagesSpec {
     route_prefix: String,
     fields: Vec<FieldSpec>,
     code_field: Option<String>,
+    /// `--field` 缺省时从规格文件（`.rush/<name>.json`）载入的原文；
+    /// 显式传字段时为 None。
+    loaded_spec: Option<crate::spec::EntitySpecFile>,
 }
 
 fn validate(opts: &PagesOptions) -> Result<PagesSpec> {
+    // 字段来源二选一：显式 --field 优先；缺省读 gen entity 落的规格文件
+    // ——字段清单从此只声明一遍（spec.rs 是唯一真相）。
+    let (fields, code_field, route_prefix, loaded_spec) = if opts.fields.is_empty() {
+        let file = crate::spec::load(&opts.repo_root, &opts.name)?;
+        let fields = crate::spec::to_fields(&file)?;
+        let code_field = opts.code_field.clone().or_else(|| file.code_field.clone());
+        let route_prefix = opts
+            .route_prefix
+            .clone()
+            .or_else(|| Some(file.route_prefix.clone()));
+        (fields, code_field, route_prefix, Some(file))
+    } else {
+        (
+            opts.fields.clone(),
+            opts.code_field.clone(),
+            opts.route_prefix.clone(),
+            None,
+        )
+    };
     let mut seen = std::collections::BTreeSet::new();
-    for field in &opts.fields {
+    for field in &fields {
         if !seen.insert(field.name.clone()) {
             return Err(Error::InvalidInput(format!("字段重复：{}", field.name)));
         }
     }
-    let code_field = match &opts.code_field {
+    let code_field = match &code_field {
         Some(code_name) => {
-            let field = opts
-                .fields
+            let field = fields
                 .iter()
                 .find(|field| &field.name == code_name)
                 .ok_or_else(|| {
@@ -96,12 +119,11 @@ fn validate(opts: &PagesOptions) -> Result<PagesSpec> {
         pascal: pascal_of(&opts.name),
         plural,
         group,
-        route_prefix: opts
-            .route_prefix
-            .clone()
+        route_prefix: route_prefix
             .unwrap_or_else(|| format!("/admin/v1/{}", plural_of(&opts.name))),
-        fields: opts.fields.clone(),
+        fields,
         code_field,
+        loaded_spec,
     })
 }
 
@@ -220,6 +242,7 @@ pub fn generate_pages(opts: &PagesOptions) -> Result<PagesReport> {
     }
 
     let mut report = PagesReport::default();
+    let spec_path = crate::spec::spec_path(&opts.repo_root, &spec.name);
     if opts.dry_run {
         report.created = files.iter().map(|(p, _)| p.clone()).collect();
         if !seed_edits.is_empty() {
@@ -228,6 +251,9 @@ pub fn generate_pages(opts: &PagesOptions) -> Result<PagesReport> {
             report
                 .skipped
                 .push(format!("{}（菜单种子已在位）", seed_rs.display()));
+        }
+        if spec_path.is_file() {
+            report.edited.push(spec_path.clone());
         }
         return Ok(report);
     }
@@ -251,6 +277,29 @@ pub fn generate_pages(opts: &PagesOptions) -> Result<PagesReport> {
             .push(format!("{}（菜单种子已在位）", seed_rs.display()));
     }
 
+    // 规格文件写回：group 落档；字段真相始终归 gen entity 所有，本命令
+    // 不改字段。
+    if spec_path.is_file() {
+        let mut file = match &spec.loaded_spec {
+            Some(file) => file.clone(),
+            None => crate::spec::load(&opts.repo_root, &spec.name)?,
+        };
+        file.group = Some(spec.group.clone());
+        crate::spec::save(&file, &opts.repo_root)?;
+        report.edited.push(spec_path);
+    }
+
+    if spec.loaded_spec.is_some() {
+        report.notes.push(format!(
+            "字段清单取自规格文件 .rush/{}.json（--field 可省）",
+            spec.name
+        ));
+        if spec.loaded_spec.as_ref().is_some_and(|file| file.global) {
+            report.notes.push(
+                "规格为全局表（--global）：页面生成 v1 仍按租户实体形状输出（已知缺口）".to_owned(),
+            );
+        }
+    }
     if seed_rs.is_file() {
         report.notes.push(format!(
             "菜单种子已写入 seed.rs（{fn_name}：按 path 幂等增量，父目录 /{} 缺失时自动补 CATALOG 行；标题用「{}」占位，文案请按需修改）",
@@ -1158,6 +1207,7 @@ mod tests {
                 },
             ],
             code_field: Some("code".to_owned()),
+            loaded_spec: None,
         }
     }
 
@@ -1278,7 +1328,10 @@ mod tests {
             name: "widget".to_owned(),
             group: None,
             route_prefix: None,
-            fields: vec![],
+            fields: vec![FieldSpec {
+                name: "code".to_owned(),
+                kind: FieldKind::String,
+            }],
             code_field: None,
             dry_run: true,
         };

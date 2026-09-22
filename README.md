@@ -104,8 +104,9 @@ rush gen entity widget --field code:string --code-field code --check
 ```
 
 字段模型：`string|i32|u32|bool|f64|enum(0=A,1=B@default=B)`。`--code-field`
-要求该字段为 string。`--global` 同时裁剪消息、实体、repo（global 臂）与
-service 的租户面。枚举按仓内标准模式生成：消息内嵌 enum、SeaORM 文本列、
+要求该字段为 string，生成的实体给该列带 `#[sea_orm(unique)]`（建表派生
+生成 UNIQUE 约束，code 臂查询的唯一性落在 schema 上）。`--global` 同时
+裁剪消息、实体、repo（global 臂）与 service 的租户面。枚举按仓内标准模式生成：消息内嵌 enum、SeaORM 文本列、
 i32↔文本转换函数、`@default` 为未识别值回退。
 
 生成物：
@@ -122,6 +123,8 @@ i32↔文本转换函数、`@default` 为未识别值回退。
   `data/repos/mod.rs` / `services.rs` / `server/rest.rs`（use 导入块 +
   mount 表）
 - proto MANIFEST 自动重建（`--skip-manifest` 跳过）
+- 实体规格文件 `.rush/<name>.json`：字段清单的唯一真相，`gen pages` 免重
+  输 `--field` 的默认输入（应提交进仓）
 
 标准列（id / sort_order / 审计人与时间戳；租户表含 tenant_id）自动带上。
 生成后 `cargo check` 即绿（在真实 rushwind-admin 上以三个实体验证过：code
@@ -136,6 +139,10 @@ i32↔文本转换函数、`@default` 为未识别值回退。
 dict 页面模式）：
 
 ```shell
+# 字段从 .rush/widget.json 规格文件继承（gen entity 已落盘）
+rush gen pages widget
+
+# 或显式给出（与 gen entity 相同的语法；显式值优先于规格）
 rush gen pages widget \
   --field code:string --field label:string \
   --field "state:enum(0=OFF,1=ON@default=ON)" --code-field code
@@ -150,10 +157,11 @@ rush gen pages widget \
   屉 + constants + index（字段驱动列与表单控件；枚举/布尔渲染 Tag）
 - `src/locales/zh-CN|en-US/_modules/<entity>.json` —— 双语文案骨架
 
-路由注册是后端菜单种子驱动的：页面文件放到位即被动态路由拾取，导航出现
-需在 seed.rs 加菜单项（生成器的提示会带上）。字段语法与 gen entity 完全
-一致，两个命令的 `--field`/`--code-field`/`--route-prefix` 保持相同取值
-即可对齐。
+路由注册是后端菜单种子驱动的：页面文件放到位即被动态路由拾取；菜单种子
+由本命令一并写入 `seed.rs`（`seed_gen_menu_<name>`，按 path 幂等增量，
+父目录缺失时自动补 CATALOG 行——存量库也生效）。字段清单缺省读规格文件
+`.rush/<name>.json`（gen entity 落盘），显式 `--field` 优先；`--group`
+会写回规格文件。
 
 `--group` 指定页面分组目录（缺省 `system`）；`--dry-run` 预览。生成后建
 议 `pnpm typecheck`（已在真实 rushwind-admin 前端上验证通过）。

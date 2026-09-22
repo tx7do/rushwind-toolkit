@@ -20,13 +20,14 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::{Error, Result};
 
 /// 清单覆盖的同步面。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Flavor {
     /// proto 契约面（BOM 归一化哈希）。
     Proto,
@@ -54,7 +55,7 @@ impl Flavor {
 }
 
 /// 一行清单：`<64 位十六进制>  <相对路径>`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub hash: String,
     pub path: String,
@@ -83,7 +84,7 @@ pub fn parse_manifest(text: &str) -> Result<Vec<Entry>> {
 }
 
 /// 校验结果：相对清单多出 / 缺失 / 改动的路径（均为排序后的相对路径）。
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckReport {
     pub added: Vec<String>,
     pub removed: Vec<String>,

@@ -4,8 +4,9 @@
 use std::fs;
 use std::path::Path;
 
-use rush_gen::entity::{FieldKind, FieldSpec};
+use rush_gen::entity::{self, EntityOptions, FieldKind, FieldSpec};
 use rush_gen::pages::{self, PagesOptions};
+use rush_gen::spec;
 use tempfile::TempDir;
 
 const SEED_RS: &str = r#"//! Boot seeds.
@@ -226,6 +227,121 @@ fn missing_seed_anchor_fails_cleanly() {
 
     let err = pages::generate_pages(&opts(&root)).unwrap_err();
     assert!(format!("{err}").contains("锚点"), "{err}");
+    assert!(!root
+        .join("frontend/admin/react/src/api/hooks/widget.ts")
+        .exists());
+}
+
+/// gen entity 的最小前置仓（proto 面 + 注册锚点），让规格文件真实落盘。
+fn scaffold_for_entity(root: &Path) {
+    fs::create_dir_all(root.join("backend/api/protos")).unwrap();
+    fs::write(root.join("backend/api/MANIFEST.sha256"), "").unwrap();
+    let src = root.join("backend/services/admin-api/src");
+    fs::create_dir_all(src.join("data/repos")).unwrap();
+    fs::create_dir_all(src.join("server")).unwrap();
+    fs::write(src.join("data.rs"), "mod misc;\n").unwrap();
+    fs::write(
+        src.join("migration.rs"),
+        "fn migrations() {\n    EntityTables::new(\"m1\", backend)\n        .table::<data::sys_configs::Entity>()\n        .build();\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("data/repos/mod.rs"),
+        "mod config;\n\npub use config::ConfigRepo;\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("services.rs"),
+        "mod config;\n\npub use config::ConfigService;\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("server/rest.rs"),
+        "use crate::services::{\n    ConfigService,\n};\n\n    mount_services!(\n        (mount_config_service, ConfigService),\n    );\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn pages_without_fields_read_the_entity_spec() {
+    let (_dir, root) = scaffold_admin();
+    scaffold_for_entity(&root);
+
+    // gen entity 落规格（显式字段）
+    let entity_opts = EntityOptions {
+        repo_root: root.clone(),
+        name: "widget".to_owned(),
+        table: None,
+        package: None,
+        route_prefix: None,
+        fields: vec![
+            FieldSpec {
+                name: "code".to_owned(),
+                kind: FieldKind::String,
+            },
+            FieldSpec {
+                name: "state".to_owned(),
+                kind: FieldKind::parse("enum(0=OFF,1=ON)").unwrap(),
+            },
+        ],
+        code_field: Some("code".to_owned()),
+        global: false,
+        check: false,
+        dry_run: false,
+        skip_manifest: true,
+    };
+    entity::generate_entity(&entity_opts).unwrap();
+    assert!(root.join(".rush/widget.json").exists());
+
+    // gen pages 不传 --field：字段/code_field/路由前缀全部继承规格
+    let mut page_opts = opts(&root);
+    page_opts.fields.clear();
+    page_opts.code_field = None;
+    page_opts.route_prefix = None;
+    let report = pages::generate_pages(&page_opts).unwrap();
+
+    let hooks =
+        fs::read_to_string(root.join("frontend/admin/react/src/api/hooks/widget.ts")).unwrap();
+    assert!(hooks.contains("export interface Widget {"), "{hooks}");
+    assert!(hooks.contains("state?: number;"), "枚举字段继承自规格");
+    assert!(
+        hooks.contains("path: `admin/v1/widgets"),
+        "路由前缀继承自规格"
+    );
+    let drawer = fs::read_to_string(
+        root.join("frontend/admin/react/src/pages/app/system/widgets/WidgetDrawer.tsx"),
+    )
+    .unwrap();
+    assert!(
+        drawer.contains("requiredCode") && drawer.contains("name=\"code\""),
+        "code_field 继承自规格：{drawer}"
+    );
+    assert!(
+        report.notes.iter().any(|n| n.contains("规格文件")),
+        "{report:#?}"
+    );
+    // group 写回规格
+    let file = spec::load(&root, "widget").unwrap();
+    assert_eq!(file.group.as_deref(), Some("system"));
+    assert!(report.edited.contains(&spec::spec_path(&root, "widget")));
+
+    // 字段与规格重复显式给出（字段重复在两源合并后仍是非法）
+    let mut dup = opts(&root);
+    dup.fields.push(FieldSpec {
+        name: "code".to_owned(),
+        kind: FieldKind::String,
+    });
+    let err = pages::generate_pages(&dup).unwrap_err();
+    assert!(format!("{err}").contains("字段重复"), "{err}");
+}
+
+#[test]
+fn pages_without_fields_and_without_spec_fail_cleanly() {
+    let (_dir, root) = scaffold_admin();
+    let mut page_opts = opts(&root);
+    page_opts.fields.clear();
+    let err = pages::generate_pages(&page_opts).unwrap_err();
+    assert!(format!("{err}").contains("规格文件缺失"), "{err}");
     assert!(!root
         .join("frontend/admin/react/src/api/hooks/widget.ts")
         .exists());

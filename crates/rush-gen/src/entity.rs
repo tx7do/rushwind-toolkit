@@ -15,11 +15,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+
 use crate::manifest::Flavor;
 use crate::{manifest, Error, Result};
 
 /// 业务字段类型（`--field name:kind` 的 kind）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FieldKind {
     /// proto `string`，实体非空 `String`。
     String,
@@ -37,7 +39,7 @@ pub enum FieldKind {
 }
 
 /// 枚举字段的取值集：`(数值, 文本)` 有序列表（必须含 0）+ 未识别回退文本。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnumValues {
     pub values: Vec<(i32, String)>,
     pub default: String,
@@ -121,17 +123,48 @@ impl FieldKind {
             Self::Float64 => "f64",
         }
     }
+
+    /// 规格串：`FieldKind::parse` 的合法输入，往返恒等（@default 与
+    /// 0 值文本相同时省略——那是 parse 的缺省语义）。
+    pub fn spec_string(&self) -> String {
+        match self {
+            Self::String => "string".to_owned(),
+            Self::Int32 => "i32".to_owned(),
+            Self::Uint32 => "u32".to_owned(),
+            Self::Bool => "bool".to_owned(),
+            Self::Float64 => "f64".to_owned(),
+            Self::Enum(values) => {
+                let mut out = String::from("enum(");
+                for (index, (num, text)) in values.values.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&format!("{num}={text}"));
+                }
+                let zero_text = values
+                    .values
+                    .iter()
+                    .find(|(num, _)| *num == 0)
+                    .map(|(_, text)| text);
+                if Some(&values.default) != zero_text {
+                    out.push_str(&format!("@default={}", values.default));
+                }
+                out.push(')');
+                out
+            }
+        }
+    }
 }
 
 /// 一个业务字段。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldSpec {
     pub name: String,
     pub kind: FieldKind,
 }
 
 /// `rush gen entity` 选项。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityOptions {
     /// rushwind-admin 仓库根目录。
     pub repo_root: PathBuf,
@@ -159,7 +192,7 @@ pub struct EntityOptions {
 }
 
 /// 生成结果报告。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct EntityReport {
     pub created: Vec<PathBuf>,
     pub edited: Vec<PathBuf>,
@@ -410,6 +443,9 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
 
     if opts.dry_run {
         report.created = files.iter().map(|(p, _)| p.clone()).collect();
+        report
+            .created
+            .push(crate::spec::spec_path(root, &spec.name));
         let mut edited: Vec<PathBuf> = Vec::new();
         for (path, _, _) in &edits {
             if !edited.contains(path) {
@@ -502,6 +538,20 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
     apply_contains_edit(&mut report, &rest_rs.0, &rest_rs.1, |text| {
         insert_mount_entry(text, &spec.name, &spec.pascal)
     })?;
+
+    // 规格文件：字段清单的唯一真相（gen pages 免重输 --field、UI 表单
+    // 回填都以它为数据源）。全链生成成功后才落盘。
+    let spec_file = crate::spec::from_parts(
+        &spec.name,
+        &spec.table,
+        &spec.package,
+        &spec.route_prefix,
+        &spec.fields,
+        spec.code_field.as_deref(),
+        spec.global,
+    );
+    let spec_path = crate::spec::save(&spec_file, root)?;
+    report.created.push(spec_path);
 
     if !opts.skip_manifest {
         let tree = Flavor::Proto.tree_path(root);

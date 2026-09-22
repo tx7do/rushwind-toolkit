@@ -16,11 +16,13 @@
 use std::fs;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::manifest::Flavor;
 use crate::{manifest, Result};
 
 /// adopt 选项。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdoptOptions {
     /// rushwind-admin 仓库根目录。
     pub repo_root: PathBuf,
@@ -55,7 +57,7 @@ exit 1
 const RETIRED_MARKER: &str = "已由 rush adopt 机制性退役";
 
 /// `react.UPSTREAM.sha256` 的处置结果。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UpstreamBaseline {
     /// 已按选项删除。
     Pruned,
@@ -67,7 +69,7 @@ pub enum UpstreamBaseline {
 }
 
 /// adopt 结果报告。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct AdoptReport {
     /// proto 清单条目数（重建或 dry-run 评估）。
     pub proto_entries: Option<usize>,
