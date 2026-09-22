@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>RushWind 工具箱</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea;
+      --text: #1f2329; --muted: #6b7280; --accent: #2f6fed;
+      --ok: #16a34a; --err: #dc2626;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font: 14px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg); color: var(--text);
+    }
+    header { padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+    header h1 { margin: 0; font-size: 16px; }
+    header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    nav { display: flex; gap: 4px; padding: 10px 20px 0; }
+    nav button {
+      border: 1px solid var(--line); background: var(--panel); padding: 7px 16px;
+      border-radius: 8px 8px 0 0; cursor: pointer; color: var(--muted); font-size: 13px;
+    }
+    nav button.active { color: var(--accent); border-bottom-color: var(--panel); font-weight: 600; }
+    main { padding: 16px 20px 24px; }
+    section.panel { display: none; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+    section.panel.active { display: block; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+    input[type=text], textarea, select {
+      width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+      font: inherit; background: #fff; color: var(--text);
+    }
+    textarea { min-height: 96px; resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+    .checks { display: flex; gap: 18px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+    .checks label { display: flex; gap: 6px; align-items: center; color: var(--text); font-size: 13px; margin: 0; }
+    .row { margin-top: 14px; display: flex; gap: 10px; align-items: center; }
+    button.primary {
+      background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+      padding: 8px 22px; cursor: pointer; font-size: 14px;
+    }
+    button.primary:disabled { opacity: .55; cursor: wait; }
+    #status { font-size: 13px; }
+    #status.ok { color: var(--ok); }
+    #status.err { color: var(--err); }
+    pre#report {
+      margin: 14px 0 0; background: #0f1115; color: #d6deeb; border-radius: 8px;
+      padding: 14px; max-height: 320px; overflow: auto; font-size: 12px; line-height: 1.55;
+      display: none; white-space: pre-wrap; word-break: break-all;
+    }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+    .full { grid-column: 1 / -1; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>RushWind 工具箱</h1>
+    <p>同进程直调 rush-gen —— 接管 · 清单 · 脚手架 · 实体链 · 页面组</p>
+  </header>
+
+  <nav>
+    <button data-tab="entity" class="active">gen entity</button>
+    <button data-tab="pages">gen pages</button>
+    <button data-tab="new">new</button>
+    <button data-tab="adopt">adopt</button>
+    <button data-tab="manifest">manifest</button>
+  </nav>
+
+  <main>
+    <!-- 实体链 -->
+    <section class="panel active" id="tab-entity">
+      <div class="grid">
+        <div><label>仓库根目录（rushwind-admin）</label><input type="text" id="e-repo" placeholder="/home/you/Github/rushwind-admin" /></div>
+        <div><label>实体名（snake_case 单数）</label><input type="text" id="e-name" placeholder="widget" /></div>
+        <div class="full">
+          <label>业务字段（每行一个 name:kind；kind ∈ string|i32|u32|bool|f64|enum(0=A,1=B@default=B)）</label>
+          <textarea id="e-fields" placeholder="code:string&#10;quantity:u32&#10;state:enum(0=OFF,1=ON@default=OFF)"></textarea>
+        </div>
+        <div><label>唯一编码字段（可选，须为 string）</label><input type="text" id="e-code" placeholder="code" /></div>
+        <div><label>路由前缀（可选，缺省 /admin/v1/&lt;复数&gt;）</label><input type="text" id="e-route" placeholder="/admin/v1/widgets" /></div>
+        <div><label>表名（可选，缺省 sys_&lt;复数&gt;）</label><input type="text" id="e-table" placeholder="sys_widgets" /></div>
+        <div><label>消息面 package（可选，缺省 &lt;name&gt;.service.v1）</label><input type="text" id="e-package" placeholder="widget.service.v1" /></div>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="e-global" /> 平台全局表（--global）</label>
+        <label><input type="checkbox" id="e-check" /> 生成后 cargo check</label>
+        <label><input type="checkbox" id="e-dry" checked /> dry-run 预览（不落盘）</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="e-run">生成</button>
+        <span id="e-status" class="status"></span>
+      </div>
+      <p class="hint">生成成功后字段真相落成 .rush/&lt;name&gt;.json —— gen pages 免重输字段。</p>
+      <pre id="e-report"></pre>
+    </section>
+
+    <!-- 页面组 -->
+    <section class="panel" id="tab-pages">
+      <div class="grid">
+        <div><label>仓库根目录（rushwind-admin）</label><input type="text" id="p-repo" placeholder="/home/you/Github/rushwind-admin" /></div>
+        <div><label>实体名（须与 gen entity 一致）</label><input type="text" id="p-name" placeholder="widget" /></div>
+        <div><label>页面分组（缺省 system）</label><input type="text" id="p-group" placeholder="system" /></div>
+        <div><label>路由前缀（可选，缺省继承规格）</label><input type="text" id="p-route" placeholder="/admin/v1/widgets" /></div>
+        <div class="full">
+          <label>业务字段（留空 = 从 .rush/&lt;name&gt;.json 规格继承，推荐）</label>
+          <textarea id="p-fields" placeholder="留空继承规格文件；或每行一个 name:kind 显式覆盖"></textarea>
+        </div>
+        <div><label>唯一编码字段（可选，缺省继承规格）</label><input type="text" id="p-code" placeholder="code" /></div>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="p-dry" checked /> dry-run 预览（不落盘）</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="p-run">生成</button>
+        <span id="p-status" class="status"></span>
+      </div>
+      <p class="hint">页面组 + 双语 locale + seed.rs 菜单种子（seed_gen_menu_&lt;name&gt;，按 path 幂等）。</p>
+      <pre id="p-report"></pre>
+    </section>
+
+    <!-- 新项目 -->
+    <section class="panel" id="tab-new">
+      <div class="grid">
+        <div><label>项目名（= crate 名 + 目录名）</label><input type="text" id="n-name" placeholder="my-service" /></div>
+        <div><label>目标父目录</label><input type="text" id="n-dir" placeholder="." /></div>
+        <div>
+          <label>存储变体</label>
+          <select id="n-storage">
+            <option value="Memory">内存（开箱即跑）</option>
+            <option value="Postgres">PostgreSQL</option>
+          </select>
+        </div>
+        <div><label>外部模板目录（可选，缺省内嵌模板）</label><input type="text" id="n-template" placeholder="留空用内嵌模板" /></div>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="n-git" checked /> git init</label>
+        <label><input type="checkbox" id="n-dry" checked /> dry-run 预览</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="n-run">创建</button>
+        <span id="n-status" class="status"></span>
+      </div>
+      <pre id="n-report"></pre>
+    </section>
+
+    <!-- 接管 -->
+    <section class="panel" id="tab-adopt">
+      <div class="grid">
+        <div><label>仓库根目录（rushwind-admin 快照）</label><input type="text" id="a-repo" placeholder="/home/you/Github/rushwind-admin" /></div>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="a-dry" checked /> dry-run 预览</label>
+        <label><input type="checkbox" id="a-gates" /> 保留 CI 门禁步（仅重建清单）</label>
+        <label><input type="checkbox" id="a-prune" /> 删除 react.UPSTREAM.sha256</label>
+        <label><input type="checkbox" id="a-scripts" /> 保留 sync 脚本（默认退役为 stub）</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="a-run">接管</button>
+        <span id="a-status" class="status"></span>
+      </div>
+      <pre id="a-report"></pre>
+    </section>
+
+    <!-- 清单 -->
+    <section class="panel" id="tab-manifest">
+      <div class="grid">
+        <div><label>仓库根目录</label><input type="text" id="m-repo" placeholder="/home/you/Github/rushwind-admin" /></div>
+        <div>
+          <label>同步面</label>
+          <select id="m-flavor">
+            <option value="Proto">proto 契约面</option>
+            <option value="React">react 前端快照面</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <button class="primary" id="m-check">校验</button>
+        <button class="primary" id="m-rebuild" style="background: #6b7280;">重建基线</button>
+        <span id="m-status" class="status"></span>
+      </div>
+      <pre id="m-report"></pre>
+    </section>
+  </main>
+
+  <script src="main.js"></script>
+</body>
+</html>

@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# rush-ui 是 Tauri 桌面壳：构建依赖 webkit2gtk 等系统开发包，独立于
+# workspace——不进 members，也不拖累主仓的 build/test/clippy。
+exclude = ["apps/rush-ui"]
 
 [workspace.package]
 version = "0.1.0"

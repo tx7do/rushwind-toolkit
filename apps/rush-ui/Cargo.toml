@@ -1,0 +1,19 @@
+[package]
+name = "rush-ui"
+version = "0.1.0"
+edition = "2021"
+description = "RushWind 生态工具箱桌面壳（Tauri 同进程直调 rush-gen 库）"
+license = "MIT"
+
+# 独立构建（workspace exclude）：依赖版本独立钉，不共享 workspace 表。
+# Linux 构建前提：libwebkit2gtk-4.1-dev / pkg-config / build-essential /
+# libssl-dev / librsvg2-dev / libayatana-appindicator3-dev（见 README）。
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rush-gen = { path = "../../crates/rush-gen" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
