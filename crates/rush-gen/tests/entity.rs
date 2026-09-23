@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use rush_gen::entity::{self, EntityOptions, FieldKind, FieldSpec};
+use rush_gen::undo;
 use tempfile::TempDir;
 
 fn scaffold_admin() -> (TempDir, std::path::PathBuf) {
@@ -70,6 +71,15 @@ fn opts(root: &Path) -> EntityOptions {
         check: false,
         dry_run: false,
         skip_manifest: true,
+        overwrite: false,
+        auth_free: false,
+    }
+}
+
+fn regen_opts(root: &Path) -> EntityOptions {
+    EntityOptions {
+        overwrite: true,
+        ..opts(root)
     }
 }
 
@@ -197,4 +207,114 @@ fn missing_anchor_files_fail_cleanly() {
     let err = entity::generate_entity(&opts(dir.path())).unwrap_err();
     assert!(format!("{err}").contains("锚点"), "{err}");
     assert!(!dir.path().join("backend/api/protos/widget").exists());
+}
+
+#[test]
+fn regen_rewrites_from_spec_and_previews_diffs() {
+    let (_dir, root) = scaffold_admin();
+    let src = root.join("backend/services/admin-api/src");
+
+    // 首次生成（带 code）
+    entity::generate_entity(&opts(&root)).unwrap();
+
+    // --regen 不带 --field：完全按规格，dry-run 给出 diff 预览但不落盘
+    let mut preview = opts(&root);
+    preview.overwrite = true;
+    preview.fields.clear(); // 触发"字段缺省读规格"
+    preview.dry_run = true;
+    let report = entity::generate_entity(&preview).unwrap();
+    assert!(
+        report.diffs.is_empty(),
+        "规格未变时 diff 应为空：{report:#?}"
+    );
+    let before = fs::read_to_string(src.join("services/widget.rs")).unwrap();
+
+    // --regen 带新字段集：覆盖生成物 + 更新规格
+    let mut regen = regen_opts(&root);
+    regen.fields = vec![
+        FieldSpec {
+            name: "code".to_owned(),
+            kind: FieldKind::String,
+        },
+        FieldSpec {
+            name: "label".to_owned(),
+            kind: FieldKind::String,
+        },
+        FieldSpec {
+            name: "quantity".to_owned(),
+            kind: FieldKind::Uint32,
+        },
+    ];
+    let report = entity::generate_entity(&regen).unwrap();
+    assert_eq!(report.updated.len(), 3, "两个 proto + service：{report:#?}");
+    let after = fs::read_to_string(src.join("services/widget.rs")).unwrap();
+    assert!(after.contains("label"), "新字段进入 service：{after}");
+    assert!(after != before);
+    let spec: rush_gen::spec::EntitySpecFile =
+        serde_json::from_str(&fs::read_to_string(root.join(".rush/widget.json")).unwrap()).unwrap();
+    let names: Vec<&str> = spec.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["code", "label", "quantity"], "规格随新字段集更新");
+
+    // 空字段 + 非 regen（文件已在）：明确报错引导
+    let mut missing = opts(&root);
+    missing.fields.clear();
+    let err = entity::generate_entity(&missing).unwrap_err();
+    assert!(format!("{err}").contains("--regen"), "{err}");
+}
+
+#[test]
+fn undo_removes_the_whole_entity_idempotently() {
+    let (_dir, root) = scaffold_admin();
+    let src = root.join("backend/services/admin-api/src");
+
+    entity::generate_entity(&opts(&root)).unwrap();
+    assert!(src.join("data/sys_widgets.rs").exists());
+    assert!(root.join(".rush/widget.json").exists());
+
+    // dry-run：只报告
+    let options = undo::UndoOptions {
+        repo_root: root.clone(),
+        name: "widget".to_owned(),
+        dry_run: true,
+    };
+    let report = undo::undo_entity(&options).unwrap();
+    assert!(!report.removed_files.is_empty(), "{report:#?}");
+    assert!(!report.edited_files.is_empty());
+    assert!(src.join("data/sys_widgets.rs").exists(), "dry-run 不删文件");
+
+    // 实际回滚
+    let options = undo::UndoOptions {
+        dry_run: false,
+        ..options
+    };
+    let report = undo::undo_entity(&options).unwrap();
+    assert_eq!(
+        report.removed_files.len(),
+        5,
+        "注解面 proto + 3 后端 rs + 规格：{report:#?}"
+    );
+    assert_eq!(
+        report.removed_dirs.len(),
+        1,
+        "消息面 proto 目录：{report:#?}"
+    );
+    assert!(!src.join("data/sys_widgets.rs").exists());
+    assert!(!root.join("backend/api/protos/widget").exists());
+    assert!(!root.join(".rush/widget.json").exists());
+
+    // 五处注册全部还原
+    let data_rs = fs::read_to_string(src.join("data.rs")).unwrap();
+    assert!(!data_rs.contains("sys_widgets"));
+    let migration = fs::read_to_string(src.join("migration.rs")).unwrap();
+    assert!(!migration.contains("sys_widgets"));
+    let repos = fs::read_to_string(src.join("data/repos/mod.rs")).unwrap();
+    assert!(!repos.contains("widget"));
+    let services = fs::read_to_string(src.join("services.rs")).unwrap();
+    assert!(!services.contains("Widget"));
+    let rest = fs::read_to_string(src.join("server/rest.rs")).unwrap();
+    assert!(!rest.contains("WidgetService"), "导入与挂载都还原：{rest}");
+
+    // 幂等：规格已删，二次 undo 报"规格文件缺失"（回滚已完成的凭证）
+    let second = undo::undo_entity(&options).unwrap_err();
+    assert!(format!("{second}").contains("规格文件缺失"), "{second}");
 }

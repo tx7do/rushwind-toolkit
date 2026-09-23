@@ -27,6 +27,8 @@ pub enum StorageKind {
     Memory,
     /// PostgreSQL（SeaORM 动态仓库，`storage.settings.url` 配 DSN）。
     Postgres,
+    /// 内嵌 SQLite（SeaORM 单连接 :memory:，开箱即跑且带真 SQL 面）。
+    Sqlite,
 }
 
 /// `rush new` 选项。
@@ -74,6 +76,36 @@ const EMBEDDED_MEMORY: [(&str, &str, &str); 5] = [
         "README.md",
         "README.md",
         include_str!("../templates/new/README.md"),
+    ),
+    (
+        "gitignore",
+        ".gitignore",
+        include_str!("../templates/new/gitignore"),
+    ),
+    (
+        "rustfmt.toml",
+        "rustfmt.toml",
+        include_str!("../templates/new/rustfmt.toml"),
+    ),
+];
+
+/// SQLite 变体：与 Postgres 同为 SeaORM 动态仓库，但走内嵌 sqlite_memory
+/// （单连接 :memory:，零安装零 DSN）。
+const EMBEDDED_SQLITE: [(&str, &str, &str); 5] = [
+    (
+        "Cargo.toml",
+        "Cargo.toml",
+        include_str!("../templates/new-sqlite/Cargo.toml"),
+    ),
+    (
+        "src_main.rs",
+        "src/main.rs",
+        include_str!("../templates/new-sqlite/src_main.rs"),
+    ),
+    (
+        "README.md",
+        "README.md",
+        include_str!("../templates/new-sqlite/README.md"),
     ),
     (
         "gitignore",
@@ -165,6 +197,7 @@ fn render_embedded(name: &str, storage: StorageKind) -> Vec<(String, Vec<u8>)> {
     let embedded = match storage {
         StorageKind::Memory => &EMBEDDED_MEMORY,
         StorageKind::Postgres => &EMBEDDED_POSTGRES,
+        StorageKind::Sqlite => &EMBEDDED_SQLITE,
     };
     embedded
         .iter()
@@ -243,6 +276,7 @@ pub fn new_project(opts: &NewOptions) -> Result<NewReport> {
                 match opts.storage {
                     StorageKind::Memory => "memory",
                     StorageKind::Postgres => "postgres",
+                    StorageKind::Sqlite => "sqlite",
                 }
             ),
             None,

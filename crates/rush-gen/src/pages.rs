@@ -36,6 +36,12 @@ pub struct PagesOptions {
     pub code_field: Option<String>,
     /// 目标前端栈；缺省 react。
     pub stack: PagesStack,
+    /// 平台全局表（页面去 tenantId）；缺省继承规格，显式给出时覆盖。
+    #[serde(default)]
+    pub global: Option<bool>,
+    /// 重生成模式：既有页面组按规格/显式参数覆盖。
+    #[serde(default)]
+    pub overwrite: bool,
     /// 只报告不落盘。
     pub dry_run: bool,
 }
@@ -65,7 +71,13 @@ impl PagesStack {
 #[derive(Debug, Default, Serialize)]
 pub struct PagesReport {
     pub created: Vec<PathBuf>,
-    /// 手术插入的既有文件（seed.rs）。
+    /// 覆盖模式（--regen）下被重写的既有页面文件。
+    #[serde(default)]
+    pub updated: Vec<PathBuf>,
+    /// dry-run 覆盖模式下的变更预览。
+    #[serde(default)]
+    pub diffs: Vec<(String, String)>,
+    /// 手术插入的既有文件（seed.rs / 路由模块 / 规格文件）。
     pub edited: Vec<PathBuf>,
     pub skipped: Vec<String>,
     pub notes: Vec<String>,
@@ -81,6 +93,7 @@ pub(crate) struct PagesSpec {
     pub(crate) fields: Vec<FieldSpec>,
     pub(crate) code_field: Option<String>,
     pub(crate) stack: PagesStack,
+    pub(crate) global: bool,
     /// `--field` 缺省时从规格文件（`.rush/<name>.json`）载入的原文；
     /// 显式传字段时为 None。
     pub(crate) loaded_spec: Option<crate::spec::EntitySpecFile>,
@@ -106,6 +119,10 @@ fn validate(opts: &PagesOptions) -> Result<PagesSpec> {
             None,
         )
     };
+    // 全局表：显式 --global 优先；否则继承规格；都没有则按租户实体。
+    let global = opts
+        .global
+        .unwrap_or_else(|| loaded_spec.as_ref().is_some_and(|file| file.global));
     let mut seen = std::collections::BTreeSet::new();
     for field in &fields {
         if !seen.insert(field.name.clone()) {
@@ -143,6 +160,7 @@ fn validate(opts: &PagesOptions) -> Result<PagesSpec> {
         pascal: pascal_of(&opts.name),
         plural,
         stack: opts.stack,
+        global,
         group,
         route_prefix: route_prefix
             .unwrap_or_else(|| format!("/admin/v1/{}", plural_of(&opts.name))),
@@ -227,9 +245,9 @@ fn generate_react(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesReport> 
         ),
     ];
     for (path, _) in &files {
-        if path.exists() {
+        if path.exists() && !opts.overwrite {
             return Err(Error::InvalidInput(format!(
-                "文件已存在：{}",
+                "文件已存在：{}（按规格重生成请加 --regen）",
                 path.display()
             )));
         }
@@ -295,7 +313,25 @@ fn generate_react(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesReport> 
     let mut report = PagesReport::default();
     let spec_path = crate::spec::spec_path(&opts.repo_root, &spec.name);
     if opts.dry_run {
-        report.created = files.iter().map(|(p, _)| p.clone()).collect();
+        report.created = files
+            .iter()
+            .filter(|(path, _)| !path.exists())
+            .map(|(p, _)| p.clone())
+            .collect();
+        if opts.overwrite {
+            for (path, content) in &files {
+                if !path.exists() {
+                    continue;
+                }
+                if let Ok(old) = fs::read_to_string(path) {
+                    if let Some(diff) =
+                        crate::textdiff::unified_ish(&path.display().to_string(), &old, content)
+                    {
+                        report.diffs.push((path.display().to_string(), diff));
+                    }
+                }
+            }
+        }
         if !seed_edits.is_empty() {
             report.edited.push(seed_rs.clone());
         } else if seed_already {
@@ -313,8 +349,25 @@ fn generate_react(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesReport> 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, content)?;
-        report.created.push(path.clone());
+        let existed = path.exists();
+        if existed {
+            if let Ok(old) = fs::read_to_string(path) {
+                if old == *content {
+                    continue;
+                }
+            }
+            if !opts.overwrite {
+                return Err(Error::InvalidInput(format!(
+                    "文件已存在：{}（按规格重生成请加 --regen）",
+                    path.display()
+                )));
+            }
+            fs::write(path, content)?;
+            report.updated.push(path.clone());
+        } else {
+            fs::write(path, content)?;
+            report.created.push(path.clone());
+        }
     }
 
     for text in &seed_edits {
@@ -378,7 +431,7 @@ pub(crate) fn ts_interface(spec: &PagesSpec) -> String {
 
 impl PagesSpec {
     fn global_like(&self) -> bool {
-        false // v1: 页面生成仅面向租户实体（与 gen entity 的 --global 互为手动步骤）
+        self.global
     }
     /// 传输路径（无前导斜杠，与生成 TS 客户端一致）。
     pub(crate) fn base_path(&self) -> String {
@@ -1247,6 +1300,7 @@ mod tests {
             ],
             code_field: Some("code".to_owned()),
             stack: PagesStack::React,
+            global: false,
             loaded_spec: None,
         }
     }
@@ -1374,6 +1428,8 @@ mod tests {
             }],
             code_field: None,
             stack: PagesStack::React,
+            global: None,
+            overwrite: false,
             dry_run: true,
         };
         assert!(validate(&base()).is_ok(), "缺省 group = system");

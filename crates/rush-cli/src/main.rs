@@ -7,11 +7,13 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use rush_gen::adopt::{self, AdoptOptions, UpstreamBaseline};
+use rush_gen::doctor;
 use rush_gen::entity::{self, EntityOptions, FieldKind, FieldSpec};
 use rush_gen::manifest::{self, CheckReport, Flavor};
 use rush_gen::pages::{self, PagesOptions};
 use rush_gen::project::{self, NewOptions, StorageKind};
 use rush_gen::testbed::{self, RunOptions};
+use rush_gen::undo;
 
 /// rush — RushWind 生态工具箱
 #[derive(Debug, Parser)]
@@ -97,6 +99,12 @@ enum Commands {
         #[command(subcommand)]
         target: GenTarget,
     },
+    /// 环境体检：工具箱全链的外部依赖一次探明（✓/⚠/✗ + 修复提示）
+    Doctor {
+        /// 目标仓根目录（给出时追加仓形状检查）
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -162,6 +170,25 @@ enum GenTarget {
         /// 唯一编码字段（抽屉必填 + 搜索列）；缺省继承规格文件
         #[arg(long, value_name = "FIELD")]
         code_field: Option<String>,
+        /// 平台全局表（页面去 tenantId；缺省继承规格）
+        #[arg(long)]
+        global: bool,
+        /// 重生成：既有页面组覆盖
+        #[arg(long)]
+        regen: bool,
+        /// 只报告不落盘
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// 回滚一个实体的全部生成物：后端链 + 三栈页面 + 菜单/路由登记 +
+    /// 规格文件（按 .rush/<name>.json 反向移除；数据库表不动）。幂等。
+    Undo {
+        /// 实体名
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// 仓库根目录
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
         /// 只报告不落盘
         #[arg(long)]
         dry_run: bool,
@@ -207,6 +234,12 @@ enum GenTarget {
         /// 跳过 proto MANIFEST 重建
         #[arg(long)]
         skip_manifest: bool,
+        /// 重生成：既有生成物按规格覆盖（--field 缺省时整体读 .rush/<name>.json）
+        #[arg(long)]
+        regen: bool,
+        /// 把本服务全部方法登记进免鉴权白名单（auth_free.rs）
+        #[arg(long)]
+        auth_free: bool,
     },
 }
 
@@ -244,6 +277,8 @@ enum StorageArg {
     Memory,
     /// PostgreSQL（SeaORM 动态仓库）
     Postgres,
+    /// 内嵌 SQLite（单连接 :memory:，开箱即跑）
+    Sqlite,
 }
 
 impl From<StorageArg> for StorageKind {
@@ -251,6 +286,7 @@ impl From<StorageArg> for StorageKind {
         match value {
             StorageArg::Memory => Self::Memory,
             StorageArg::Postgres => Self::Postgres,
+            StorageArg::Sqlite => Self::Sqlite,
         }
     }
 }
@@ -405,6 +441,8 @@ fn run(cli: Cli) -> Result<()> {
                     route_prefix,
                     fields,
                     code_field,
+                    global,
+                    regen,
                     dry_run,
                 },
         } => {
@@ -429,10 +467,29 @@ fn run(cli: Cli) -> Result<()> {
                 fields: parsed,
                 code_field,
                 stack: stack.into(),
+                global: if global { Some(true) } else { None },
+                overwrite: regen,
                 dry_run,
             };
             let report = pages::generate_pages(&opts).context("gen pages 失败")?;
             render_pages(&report, dry_run);
+            Ok(())
+        }
+        Commands::Gen {
+            target:
+                GenTarget::Undo {
+                    name,
+                    repo,
+                    dry_run,
+                },
+        } => {
+            let opts = undo::UndoOptions {
+                repo_root: repo,
+                name,
+                dry_run,
+            };
+            let report = undo::undo_entity(&opts).context("gen undo 失败")?;
+            render_undo(&report, dry_run);
             Ok(())
         }
         Commands::Gen {
@@ -449,6 +506,8 @@ fn run(cli: Cli) -> Result<()> {
                     check,
                     dry_run,
                     skip_manifest,
+                    regen,
+                    auth_free,
                 },
         } => {
             let mut parsed = Vec::with_capacity(fields.len());
@@ -476,9 +535,19 @@ fn run(cli: Cli) -> Result<()> {
                 check,
                 dry_run,
                 skip_manifest,
+                overwrite: regen,
+                auth_free,
             };
             let report = entity::generate_entity(&opts).context("gen entity 失败")?;
             render_gen(&report, dry_run);
+            Ok(())
+        }
+        Commands::Doctor { repo } => {
+            let report = doctor::run_doctor(repo.as_deref());
+            render_doctor(&report);
+            if report.has_failures() {
+                std::process::exit(1);
+            }
             Ok(())
         }
     }
@@ -505,6 +574,51 @@ fn render_pages(report: &pages::PagesReport, dry_run: bool) {
         println!();
         for note in &report.notes {
             println!("注意：{note}");
+        }
+    }
+}
+
+fn render_undo(report: &undo::UndoReport, dry_run: bool) {
+    let tag = if dry_run { "[dry-run] " } else { "" };
+    if !report.removed_files.is_empty() {
+        println!("{tag}删除文件：");
+        for path in &report.removed_files {
+            println!("  - {}", path.display());
+        }
+    }
+    if !report.removed_dirs.is_empty() {
+        println!("{tag}删除目录：");
+        for path in &report.removed_dirs {
+            println!("  - {}/", path.display());
+        }
+    }
+    if !report.edited_files.is_empty() {
+        println!("{tag}还原登记：");
+        for path in &report.edited_files {
+            println!("  ~ {}", path.display());
+        }
+    }
+    for item in &report.skipped {
+        println!("  = 跳过 {item}");
+    }
+    if !report.notes.is_empty() {
+        println!();
+        for note in &report.notes {
+            println!("注意：{note}");
+        }
+    }
+}
+
+fn render_doctor(report: &doctor::DoctorReport) {
+    for check in &report.checks {
+        let mark = match check.status {
+            doctor::Status::Ok => "✓",
+            doctor::Status::Warn => "⚠",
+            doctor::Status::Fail => "✗",
+        };
+        println!("{mark} {:<16} {}", check.name, check.detail);
+        if let Some(hint) = &check.hint {
+            println!("                 ↳ {hint}");
         }
     }
 }
@@ -569,11 +683,21 @@ fn render_gen(report: &entity::EntityReport, dry_run: bool) {
             println!("  + {}", path.display());
         }
     }
+    if !report.updated.is_empty() {
+        println!("{tag}覆盖文件：");
+        for path in &report.updated {
+            println!("  ↻ {}", path.display());
+        }
+    }
     if !report.edited.is_empty() {
         println!("{tag}编辑文件：");
         for path in &report.edited {
             println!("  ~ {}", path.display());
         }
+    }
+    for (path, diff) in &report.diffs {
+        println!("{tag}diff {path}：");
+        println!("{}", diff.trim_end());
     }
     for item in &report.skipped {
         println!("  = 跳过 {item}");

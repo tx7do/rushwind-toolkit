@@ -971,6 +971,7 @@ mod tests {
             ],
             code_field: Some("code".to_owned()),
             stack: crate::pages::PagesStack::Element,
+            global: false,
             loaded_spec: None,
         }
     }

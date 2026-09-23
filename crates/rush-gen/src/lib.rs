@@ -9,6 +9,7 @@
 //!   真相，gen entity 落盘、gen pages 读取，UI 表单回填的数据源。
 
 pub mod adopt;
+pub mod doctor;
 pub mod entity;
 pub mod manifest;
 pub mod pages;
@@ -17,6 +18,8 @@ mod pages_vben;
 pub mod project;
 pub mod spec;
 pub mod testbed;
+pub mod textdiff;
+pub mod undo;
 
 use std::io;
 use std::path::PathBuf;

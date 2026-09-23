@@ -12,8 +12,9 @@
 //! `server/rest.rs`（mount_services! 表）。
 
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
@@ -200,12 +201,26 @@ pub struct EntityOptions {
     pub dry_run: bool,
     /// 跳过 proto MANIFEST 重建。
     pub skip_manifest: bool,
+    /// 重生成模式：既有生成物按规格覆盖（--field 缺省时整体读规格），
+    /// 手术插入保持幂等；新增字段随 spec 落盘。
+    #[serde(default)]
+    pub overwrite: bool,
+    /// 把本服务的全部方法登记进 crates/proto/src/auth_free.rs（免鉴权
+    /// 白名单；差分中对应路由将由 sweep-gated 转为 sweep-public）。
+    #[serde(default)]
+    pub auth_free: bool,
 }
 
 /// 生成结果报告。
 #[derive(Debug, Default, Serialize)]
 pub struct EntityReport {
     pub created: Vec<PathBuf>,
+    /// 覆盖模式（--regen）下被重写的既有生成物。
+    #[serde(default)]
+    pub updated: Vec<PathBuf>,
+    /// dry-run 覆盖模式下的变更预览（路径，unified 风格 diff）。
+    #[serde(default)]
+    pub diffs: Vec<(String, String)>,
     pub edited: Vec<PathBuf>,
     pub skipped: Vec<String>,
     pub manifest_entries: Option<usize>,
@@ -354,8 +369,64 @@ fn validate(opts: &EntityOptions) -> Result<EntitySpec> {
     })
 }
 
-/// 生成实体链。新文件拒绝覆盖；既有文件的手术插入幂等。
+/// 输入解析：`--field` 缺省时从规格文件整体取默认（仅覆盖模式）——
+/// 规格是字段真相，`--regen` 的本质是"按规格重写生成物"。
+fn resolve_entity_inputs(opts: &EntityOptions) -> Result<EntityOptions> {
+    if opts.fields.is_empty() {
+        if !opts.overwrite {
+            return Err(Error::InvalidInput(
+                "缺少 --field：新实体至少要一个业务字段；重生成已有实体请加 --regen（字段缺省从 .rush/<name>.json 规格读取）"
+                    .to_owned(),
+            ));
+        }
+        let file = crate::spec::load(&opts.repo_root, &opts.name)?;
+        let fields = crate::spec::to_fields(&file)?;
+        return Ok(EntityOptions {
+            repo_root: opts.repo_root.clone(),
+            name: opts.name.clone(),
+            table: Some(file.table.clone()),
+            package: Some(file.package.clone()),
+            route_prefix: Some(file.route_prefix.clone()),
+            fields,
+            code_field: opts.code_field.clone().or(file.code_field.clone()),
+            global: file.global,
+            check: opts.check,
+            dry_run: opts.dry_run,
+            skip_manifest: opts.skip_manifest,
+            overwrite: opts.overwrite,
+            auth_free: opts.auth_free,
+        });
+    }
+    if !opts.overwrite {
+        return Ok(opts.clone());
+    }
+    // 带字段 + 覆盖模式：规格可选（首件生成即视为 regen）；有规格则
+    // 继承其非默认项（表名/package/路由前缀/code 字段），字段以显式为准。
+    let file = match crate::spec::load(&opts.repo_root, &opts.name) {
+        Ok(file) => file,
+        Err(_) => return Ok(opts.clone()),
+    };
+    Ok(EntityOptions {
+        repo_root: opts.repo_root.clone(),
+        name: opts.name.clone(),
+        table: Some(file.table.clone()),
+        package: Some(file.package.clone()),
+        route_prefix: Some(file.route_prefix.clone()),
+        fields: opts.fields.clone(),
+        code_field: opts.code_field.clone().or(file.code_field.clone()),
+        global: opts.global,
+        check: opts.check,
+        dry_run: opts.dry_run,
+        skip_manifest: opts.skip_manifest,
+        overwrite: opts.overwrite,
+        auth_free: opts.auth_free,
+    })
+}
+
+/// 生成实体链。新文件拒绝覆盖（`--regen` 按规格覆盖既有生成物）；
+/// 既有文件的手术插入幂等。
 pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
+    let opts = &resolve_entity_inputs(opts)?;
     let spec = validate(opts)?;
     let root = &opts.repo_root;
     let mut report = EntityReport::default();
@@ -399,13 +470,26 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
         ),
     ];
     for (path, _) in &files {
-        if path.exists() {
+        if path.exists() && !opts.overwrite {
             return Err(Error::InvalidInput(format!(
-                "文件已存在：{}",
+                "文件已存在：{}（按规格重生成请加 --regen）",
                 path.display()
             )));
         }
     }
+
+    // .rs 生成物在写入前过一遍 rustfmt：diff 预览与落盘内容一致，
+    // 重复 regen 的 diff 恒为空（幂等的可观测性前提）。
+    let files: Vec<(PathBuf, String)> = files
+        .into_iter()
+        .map(|(path, content)| {
+            if path.extension().is_some_and(|ext| ext == "rs") {
+                (path, format_rust_source(&content))
+            } else {
+                (path, content)
+            }
+        })
+        .collect();
 
     // ---- 既有文件的编辑计划（锚点在写入前全部校验，避免半套生成） ----
     let edits: Vec<(PathBuf, String, String)> = vec![
@@ -453,10 +537,29 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
     }
 
     if opts.dry_run {
-        report.created = files.iter().map(|(p, _)| p.clone()).collect();
+        report.created = files
+            .iter()
+            .filter(|(path, _)| !path.exists())
+            .map(|(p, _)| p.clone())
+            .collect();
         report
             .created
             .push(crate::spec::spec_path(root, &spec.name));
+        if opts.overwrite {
+            // 覆盖预览：既有生成物的行级 diff（变化的才列）
+            for (path, content) in &files {
+                if !path.exists() {
+                    continue;
+                }
+                if let Ok(old) = fs::read_to_string(path) {
+                    if let Some(diff) =
+                        crate::textdiff::unified_ish(&path.display().to_string(), &old, content)
+                    {
+                        report.diffs.push((path.display().to_string(), diff));
+                    }
+                }
+            }
+        }
         let mut edited: Vec<PathBuf> = Vec::new();
         for (path, _, _) in &edits {
             if !edited.contains(path) {
@@ -479,8 +582,26 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, content)?;
-        report.created.push(path.clone());
+        let existed = path.exists();
+        if existed {
+            // 内容未变就不动：updated 只统计真实变更（regen 报告的可信度）
+            if let Ok(old) = fs::read_to_string(path) {
+                if old == *content {
+                    continue;
+                }
+            }
+            if !opts.overwrite {
+                return Err(Error::InvalidInput(format!(
+                    "文件已存在：{}（按规格重生成请加 --regen）",
+                    path.display()
+                )));
+            }
+            fs::write(path, content)?;
+            report.updated.push(path.clone());
+        } else {
+            fs::write(path, content)?;
+            report.created.push(path.clone());
+        }
     }
 
     // data.rs：pub mod 行（实体文件平铺，无包装模块）
@@ -570,10 +691,40 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
         report.manifest_entries = Some(manifest::rebuild(&tree, &path, Flavor::Proto)?);
     }
 
+    if !opts.dry_run && opts.auth_free {
+        let auth_free_rs = root.join("backend/crates/proto/src/auth_free.rs");
+        if auth_free_rs.is_file() {
+            let text = fs::read_to_string(&auth_free_rs)?;
+            let fq = format!("{}.{}Service", spec.package, spec.pascal);
+            let methods = ["List", "Count", "Get", "Create", "Update", "Delete"];
+            match insert_auth_free_entries(&text, &fq, &methods) {
+                Some(edited) => {
+                    fs::write(&auth_free_rs, edited)?;
+                    report.edited.push(auth_free_rs.clone());
+                }
+                None => report
+                    .skipped
+                    .push(format!("{}（条目已在位）", auth_free_rs.display())),
+            }
+        } else {
+            report.notes.push(
+                "目标仓没有 auth_free.rs，--auth-free 未生效（免鉴权白名单需手动登记）".to_owned(),
+            );
+        }
+    }
+    report
+        .notes
+        .push(if opts.auth_free {
+            "本服务已登记免鉴权：差分中对应路由由 sweep-gated 转为 sweep-public（Pending），Go 侧放行语义需自行对齐".to_owned()
+        } else {
+            "新路由默认走鉴权门；如需免鉴权，用 --auth-free 或把服务加入 crates/proto/src/auth_free.rs".to_owned()
+        });
+
     if opts.check {
         let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
             .args(["check", "-q", "-p", "admin-api"])
             .current_dir(root.join("backend"))
+            .env("PATH", augmented_path())
             .status();
         match status {
             Ok(status) if status.success() => report.check_passed = Some(true),
@@ -603,12 +754,76 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
         .notes
         .push("生成后建议在 backend/ 下运行 cargo fmt（导入折行与长行由 rustfmt 归位）".to_owned());
     report.notes.push(
-        "新路由默认走鉴权门；如需免鉴权，把服务路由加入 crates/proto/src/auth_free.rs".to_owned(),
+        "testbed sweep 由契约路由表自动生成：新实体的门面差分随 proto 重建自动生效；数据面在 Rust 侧模块落地前保持 Pending（设计内）".to_owned(),
     );
-    report
-        .notes
-        .push("testbed corpus/exemptions 未更新（如需差分覆盖请手动补充）".to_owned());
     Ok(report)
+}
+
+/// rustfmt stdin→stdout 的内存格式化；rustfmt 不可用时原样返回
+/// （生成物仍正确，只是不保证 fmt 整洁）。
+fn format_rust_source(source: &str) -> String {
+    let attempt = Command::new("rustfmt")
+        .arg("--edition")
+        .arg("2021")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env("PATH", augmented_path())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .take()
+                .expect("stdin 已接管")
+                .write_all(source.as_bytes())?;
+            let output = child.wait_with_output()?;
+            if output.status.success() {
+                Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+            } else {
+                Err(std::io::Error::other("rustfmt 非零退出"))
+            }
+        });
+    attempt.unwrap_or_else(|_| source.to_owned())
+}
+
+/// spawn 子进程的 PATH 增补：cargo/buf 常安装于 ~/.cargo/bin 与
+/// ~/.local/bin（桌面/GUI 场景不继承 shell PATH，实测坑）。
+pub(crate) fn augmented_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let extra = format!("{home}/.cargo/bin:{home}/.local/bin");
+    match std::env::var("PATH") {
+        Ok(path) => format!("{extra}:{path}"),
+        Err(_) => extra,
+    }
+}
+
+/// 免鉴权白名单登记：AUTH_FREE 数组关闭 `];` 前追加 (fq, method) 单行
+/// 条目；区域（const 起 至 `];`）内已含同 fq+method 的跳过。返回 None
+/// 表示无需变更。
+fn insert_auth_free_entries(text: &str, fq: &str, methods: &[&str]) -> Option<String> {
+    let start = text.find("pub const AUTH_FREE")?;
+    let close_byte = text[start..].find("];")? + start;
+    let region = &text[start..close_byte];
+    let mut additions = String::new();
+    for method in methods {
+        let present =
+            region.contains(&format!("\"{fq}\"")) && region.contains(&format!("\"{method}\""));
+        if !present {
+            additions.push_str(&format!(
+                "    (\"{fq}\", \"{method}\"),
+"
+            ));
+        }
+    }
+    if additions.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}{}{}",
+        &text[..close_byte],
+        additions,
+        &text[close_byte..]
+    ))
 }
 
 fn pub_use_key(line: &str) -> Option<String> {

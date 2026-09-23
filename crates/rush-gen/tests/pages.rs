@@ -76,6 +76,8 @@ fn opts(root: &Path) -> PagesOptions {
         ],
         code_field: Some("code".to_owned()),
         stack: rush_gen::pages::PagesStack::React,
+        global: None,
+        overwrite: false,
         dry_run: false,
     }
 }
@@ -290,6 +292,8 @@ fn pages_without_fields_read_the_entity_spec() {
         check: false,
         dry_run: false,
         skip_manifest: true,
+        overwrite: false,
+        auth_free: false,
     };
     entity::generate_entity(&entity_opts).unwrap();
     assert!(root.join(".rush/widget.json").exists());
