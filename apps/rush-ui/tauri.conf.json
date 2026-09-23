@@ -4,18 +4,19 @@
   "version": "0.1.0",
   "identifier": "dev.rushwind.rush-ui",
   "build": {
-    "frontendDist": "web"
+    "frontendDist": "frontend/dist"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "RushWind 工具箱",
-        "width": 1080,
-        "height": 760,
+        "title": "RushWind Toolkit",
+        "width": 1024,
+        "height": 768,
         "minWidth": 860,
         "minHeight": 600,
-        "resizable": true
+        "resizable": true,
+        "backgroundColor": "#ffffff"
       }
     ],
     "security": {

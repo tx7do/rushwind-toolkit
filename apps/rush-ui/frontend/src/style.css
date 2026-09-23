@@ -1,0 +1,52 @@
+/* rush-ui 全局样式：与 gowind-uiapp 同款页面骨架（白底、左 Tabs）。 */
+
+body {
+  margin: 0;
+  font-family: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.page-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+  background-color: #ffffff;
+}
+
+.layout-wrapper {
+  flex: 1;
+  overflow: hidden;
+  background-color: #ffffff;
+}
+
+/* 左 Tabs 占满高度，内容区自身滚动 */
+.tabs-container {
+  height: 100%;
+}
+
+.tabs-container :deep(.ant-tabs-content-holder) {
+  overflow: auto;
+  padding: 4px 8px 16px 4px;
+}
+
+/* 全局步骤导航底部栏（gowind 同名约定） */
+.step-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
+  flex-shrink: 0;
+}
+
+.mono {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.path-hint {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  word-break: break-all;
+}
