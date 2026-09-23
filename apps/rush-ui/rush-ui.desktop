@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=RushWind Toolkit
+Comment=RushWind 生态工具箱：接管 · 清单 · 脚手架 · 实体链 · 三栈页面
+Exec=/home/yanglinbo/Github/rushwind-toolkit/apps/rush-ui/target/debug/rush-ui
+Icon=/home/yanglinbo/Github/rushwind-toolkit/apps/rush-ui/icons/icon.png
+Terminal=false
+StartupWMClass=rush-ui
+Categories=Development;

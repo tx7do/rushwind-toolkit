@@ -28,6 +28,21 @@ cargo run        # tauri.conf.json 的 frontendDist 指向 frontend/dist
 开发热重载可装 tauri-cli：`cargo install tauri-cli --version '^2'` 后
 `cargo tauri dev`（打包需在 tauri.conf.json 配置 bundle.icon 全尺寸集）。
 
+## 桌面图标 / 任务栏（GNOME Wayland）
+
+Wayland 下任务栏图标不读窗口内嵌图标，靠桌面文件匹配。安装（用户级，
+无需 sudo）：
+
+```shell
+cp apps/rush-ui/rush-ui.desktop ~/.local/share/applications/
+mkdir -p ~/.local/share/icons/hicolor/200x200/apps
+cp apps/rush-ui/icons/icon.png ~/.local/share/icons/hicolor/200x200/apps/rush-ui.png
+update-desktop-database ~/.local/share/applications
+```
+
+`StartupWMClass=rush-ui` 与二进制名一致，GNOME 据此把运行中的窗口对到
+这个入口上。图标用 rushwind-admin 品牌素材（brand/overlay 的 logo）。
+
 ## 命令面（直调 rush-gen 库）
 
 | 页面 | 直调 | 说明 |
