@@ -52,6 +52,14 @@ pub(crate) fn generate(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesRep
             page_dir.join(format!("{}-drawer.vue", spec.name)),
             drawer_vue(spec),
         ),
+        (
+            app_root.join(format!("src/locales/zh-CN/pages/{}.json", spec.name)),
+            locale_file(spec, true),
+        ),
+        (
+            app_root.join(format!("src/locales/en-US/pages/{}.json", spec.name)),
+            locale_file(spec, false),
+        ),
     ];
     for (path, _) in &files {
         if path.exists() {
@@ -127,8 +135,7 @@ pub(crate) fn generate(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesRep
         ));
     }
     report.notes.push(
-        "字段标签用字段名占位：本地化时在 src/locales/*/pages 增补 pages.<name> 命名空间并替换页面里的字面量"
-            .to_owned(),
+        "字段文案在 src/locales/{zh-CN,en-US}/pages/<name>.json——翻译直接改这两份".to_owned(),
     );
     report.notes.push(
         "生成后建议在 frontend/admin/vue-element 下运行仓内的 typecheck/lint 脚本".to_owned(),
@@ -387,12 +394,12 @@ fn search_fields(spec: &PagesSpec) -> String {
         out.push_str(&render(
             r#"        {
           type: "input",
-          label: "@@CAMEL@@",
+          label: $t("pages.@@NAME@@.@@CAMEL@@"),
           field: "@@CAMEL@@",
           attrs: { placeholder: $t("common.placeholder.input"), clearable: true },
         },
 "#,
-            &[("CAMEL", camel)],
+            &[("CAMEL", camel), ("NAME", spec.name.clone())],
         ));
     }
     out
@@ -415,11 +422,15 @@ fn table_columns(spec: &PagesSpec) -> String {
         out.push_str(&render(
             r#"        {
           prop: "@@CAMEL@@",
-          label: "@@CAMEL@@",
+          label: $t("pages.@@NAME@@.@@CAMEL@@"),
           minWidth: 110,
 @@SLOT@@        },
 "#,
-            &[("CAMEL", camel), ("SLOT", slot_line)],
+            &[
+                ("CAMEL", camel),
+                ("NAME", spec.name.clone()),
+                ("SLOT", slot_line),
+            ],
         ));
     }
     out.push_str(
@@ -719,11 +730,15 @@ fn form_items(spec: &PagesSpec) -> String {
             ),
         };
         out.push_str(&render(
-            r#"      <ElFormItem label="@@LABEL@@" prop="@@CAMEL@@">
+            r#"      <ElFormItem :label="$t('pages.@@NAME@@.@@CAMEL@@')" prop="@@CAMEL@@">
 @@CONTROL@@      </ElFormItem>
 
 "#,
-            &[("CAMEL", camel), ("LABEL", label), ("CONTROL", control)],
+            &[
+                ("CAMEL", camel),
+                ("NAME", spec.name.clone()),
+                ("CONTROL", control),
+            ],
         ));
     }
     out.push_str(&render(
@@ -740,6 +755,44 @@ fn form_items(spec: &PagesSpec) -> String {
         &[],
     ));
     out
+}
+
+/// 双语文案文件（element 是每实体一份，无需手术插入）：键结构与仓内
+/// pages/*.json 对齐；字段标签以字段名占位，翻译在此文件上直接改。
+fn locale_file(spec: &PagesSpec, zh: bool) -> String {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "moduleName".to_owned(),
+        serde_json::Value::String(if zh {
+            spec.name.clone()
+        } else {
+            spec.pascal.clone()
+        }),
+    );
+    for field in &spec.fields {
+        let camel = camel_of(&field.name);
+        map.insert(camel.clone(), serde_json::Value::String(camel));
+    }
+    map.insert(
+        "sortOrder".to_owned(),
+        serde_json::Value::String("sortOrder".to_owned()),
+    );
+    let (create, update) = if zh {
+        (
+            format!("新建{}", spec.pascal),
+            format!("编辑{}", spec.pascal),
+        )
+    } else {
+        (
+            format!("Create {}", spec.pascal),
+            format!("Edit {}", spec.pascal),
+        )
+    };
+    map.insert(
+        "button".to_owned(),
+        serde_json::json!({ "create": create, "update": update }),
+    );
+    serde_json::to_string_pretty(&serde_json::Value::Object(map)).expect("locale 合法") + "\n"
 }
 
 fn drawer_select_imports(spec: &PagesSpec) -> String {
@@ -828,7 +881,9 @@ const formRules = {
 
 // 标题
 const title = computed(() =>
-  isCreate.value ? "新建 @@PASCAL@@" : "编辑 @@PASCAL@@"
+  isCreate.value
+    ? $t("pages.@@NAME@@.button.create")
+    : $t("pages.@@NAME@@.button.update")
 );
 
 // 打开抽屉

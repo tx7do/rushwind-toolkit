@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use rush_gen::adopt::{self, AdoptOptions};
+use rush_gen::doctor;
 use rush_gen::entity::{self, EntityOptions, FieldKind, FieldSpec};
+use rush_gen::undo;
 use rush_gen::manifest::{self, CheckReport, Flavor};
 use rush_gen::pages::{self, PagesOptions};
 use rush_gen::project::{self, NewOptions, NewReport};
@@ -55,6 +57,8 @@ struct EntityOptionsDto {
     check: bool,
     dry_run: bool,
     skip_manifest: bool,
+    overwrite: bool,
+    auth_free: bool,
 }
 
 impl EntityOptionsDto {
@@ -71,6 +75,8 @@ impl EntityOptionsDto {
             check: self.check,
             dry_run: self.dry_run,
             skip_manifest: self.skip_manifest,
+            overwrite: self.overwrite,
+            auth_free: self.auth_free,
         })
     }
 }
@@ -84,6 +90,8 @@ struct PagesOptionsDto {
     fields: Vec<FieldDto>,
     code_field: Option<String>,
     stack: rush_gen::pages::PagesStack,
+    global: Option<bool>,
+    overwrite: bool,
     dry_run: bool,
 }
 
@@ -97,6 +105,8 @@ impl PagesOptionsDto {
             fields: convert_fields(&self.fields)?,
             code_field: self.code_field,
             stack: self.stack,
+            global: self.global,
+            overwrite: self.overwrite,
             dry_run: self.dry_run,
         })
     }
@@ -112,6 +122,16 @@ fn gen_entity(opts: EntityOptionsDto) -> CmdResult<entity::EntityReport> {
 #[tauri::command]
 fn gen_pages(opts: PagesOptionsDto) -> CmdResult<pages::PagesReport> {
     pages::generate_pages(&opts.into_core()?).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+fn gen_undo(opts: undo::UndoOptions) -> CmdResult<undo::UndoReport> {
+    undo::undo_entity(&opts).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+fn doctor(repo: Option<String>) -> doctor::DoctorReport {
+    doctor::run_doctor(repo.as_deref().map(Path::new))
 }
 
 #[tauri::command]
@@ -201,6 +221,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             gen_entity,
             gen_pages,
+            gen_undo,
+            doctor,
             new_project,
             adopt,
             manifest_check,

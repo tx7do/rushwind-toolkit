@@ -24,6 +24,58 @@ use crate::{Error, Result};
 
 const BOM: &str = "\u{FEFF}";
 
+/// page.<name> 命名空间的文案值（zh/en 差异只在 moduleName 与按钮）。
+fn page_namespace(spec: &PagesSpec, zh: bool) -> serde_json::Value {
+    let mut namespace = serde_json::Map::new();
+    namespace.insert(
+        "moduleName".to_owned(),
+        serde_json::Value::String(if zh {
+            spec.name.clone()
+        } else {
+            spec.pascal.clone()
+        }),
+    );
+    for field in &spec.fields {
+        let camel = camel_of(&field.name);
+        namespace.insert(camel.clone(), serde_json::Value::String(camel));
+    }
+    namespace.insert(
+        "sortOrder".to_owned(),
+        serde_json::Value::String("sortOrder".to_owned()),
+    );
+    let (create, update) = if zh {
+        (
+            format!("新建{}", spec.pascal),
+            format!("编辑{}", spec.pascal),
+        )
+    } else {
+        (
+            format!("Create {}", spec.pascal),
+            format!("Edit {}", spec.pascal),
+        )
+    };
+    namespace.insert(
+        "button".to_owned(),
+        serde_json::json!({ "create": create, "update": update }),
+    );
+    serde_json::Value::Object(namespace)
+}
+
+/// 往 page.json 插入/更新 page.<name> 命名空间。preserve_order 保住既有
+/// 键序；键在且内容一致返回 None（幂等）。
+fn upsert_page_namespace(text: &str, spec: &PagesSpec, zh: bool) -> Option<String> {
+    let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let obj = value.as_object_mut()?;
+    let namespace = page_namespace(spec, zh);
+    if obj.get(&spec.name) == Some(&namespace) {
+        return None;
+    }
+    obj.insert(spec.name.clone(), namespace);
+    let mut out = serde_json::to_string_pretty(&value).ok()?;
+    out.push('\n');
+    Some(out)
+}
+
 /// token 替换式模板渲染：@@KEY@@ → 值（Vue/TS 模板花括号密集，不用
 /// format! 以免转义吞掉模板本体）。
 fn render(template: &str, vars: &[(&str, String)]) -> String {
@@ -72,6 +124,23 @@ pub(crate) fn generate(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesRep
 
     // 路由模块：新分组整文件创建（glob 自动拾取），既有分组手术插入
     // children（写入前校验锚点，避免半套生成）。
+    // page.<name> 命名空间插入（双语 page.json；preserve_order 保住既有
+    // 键序，新键追加尾部）。键在且内容一致 → 幂等跳过。
+    let mut locale_edits: Vec<(PathBuf, String)> = Vec::new();
+    let mut locale_skipped = 0usize;
+    for lang in ["zh-CN", "en-US"] {
+        let page_json = app_root.join(format!("src/locales/langs/{lang}/page.json"));
+        if !page_json.is_file() {
+            locale_skipped += 1;
+            continue;
+        }
+        let original = fs::read_to_string(&page_json)?;
+        match upsert_page_namespace(&original, spec, lang == "zh-CN") {
+            Some(edited) => locale_edits.push((page_json, edited)),
+            None => locale_skipped += 1,
+        }
+    }
+
     let component_path = format!("#/views/app/{}/{}/index.vue", spec.group, spec.plural);
     let mut route_created = false;
     let mut route_skipped = false;
@@ -91,6 +160,14 @@ pub(crate) fn generate(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesRep
     let mut report = PagesReport::default();
     if opts.dry_run {
         report.created = files.iter().map(|(p, _)| p.clone()).collect();
+        for (path, _) in &locale_edits {
+            report.edited.push(path.clone());
+        }
+        if locale_skipped > 0 {
+            report.skipped.push(format!(
+                "page.json 文案键已在位（{locale_skipped} 份未变或缺失）"
+            ));
+        }
         if route_created {
             report.created.push(route_module.clone());
         } else if !route_skipped {
@@ -123,6 +200,16 @@ pub(crate) fn generate(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesRep
         report
             .skipped
             .push(format!("{}（路由条目已在位）", route_module.display()));
+    }
+
+    for (path, edited) in &locale_edits {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, edited)?;
+        if !report.edited.contains(path) {
+            report.edited.push(path.clone());
+        }
     }
 
     if route_created {
@@ -399,14 +486,14 @@ fn search_schema(spec: &PagesSpec) -> String {
             r#"    {
       component: 'Input',
       fieldName: '@@CAMEL@@',
-      label: '@@CAMEL@@',
+      label: $t('page.@@NAME@@.@@CAMEL@@'),
       componentProps: {
         placeholder: $t('ui.placeholder.input'),
         allowClear: true,
       },
     },
 "#,
-            &[("CAMEL", camel)],
+            &[("CAMEL", camel), ("NAME", spec.name.clone())],
         ));
     }
     out
@@ -421,12 +508,16 @@ fn grid_columns(spec: &PagesSpec) -> String {
             .then(|| format!("      slots: {{ default: '{camel}' }},\n"));
         out.push_str(&render(
             r#"    {
-      title: '@@CAMEL@@',
+      title: $t('page.@@NAME@@.@@CAMEL@@'),
       field: '@@CAMEL@@',
 @@SLOT@@      minWidth: 110,
     },
 "#,
-            &[("CAMEL", camel), ("SLOT", slot.unwrap_or_default())],
+            &[
+                ("CAMEL", camel),
+                ("NAME", spec.name.clone()),
+                ("SLOT", slot.unwrap_or_default()),
+            ],
         ));
     }
     out.push_str(
@@ -631,10 +722,10 @@ async function handleDelete(row: any) {
 
 <template>
   <Page auto-content-height>
-    <Grid :table-title="'@@PASCAL@@'">
+    <Grid :table-title="$t('page.@@NAME@@.moduleName')">
       <template #toolbar-tools>
         <a-button type="primary" class="mr-2" @click="handleCreate">
-          新建
+          {{ $t('page.@@NAME@@.button.create') }}
         </a-button>
         <TableExportButton :fetcher="exportFetcher" :columns="gridOptions.columns" filename="@@PLURAL@@" />
       </template>
@@ -647,7 +738,11 @@ async function handleDelete(row: any) {
         <a-popconfirm
           :cancel-text="$t('ui.button.cancel')"
           :ok-text="$t('ui.button.ok')"
-          :title="$t('ui.text.do_you_want_delete', { moduleName: '@@PASCAL@@' })"
+          :title="
+            $t('ui.text.do_you_want_delete', {
+              moduleName: $t('page.@@NAME@@.moduleName'),
+            })
+          "
           @confirm="handleDelete(row)"
         >
           <a-button danger type="link" :icon="h(LucideTrash2)" />
@@ -691,19 +786,23 @@ fn drawer_form_schema(spec: &PagesSpec) -> String {
                 r#"    {
       component: 'Select',
       fieldName: '@@CAMEL@@',
-      label: '@@CAMEL@@',
+      label: $t('page.@@NAME@@.@@CAMEL@@'),
 @@RULES@@      componentProps: {
         options: @@CAMEL@@Options,
       },
     },
 "#,
-                &[("CAMEL", camel.clone()), ("RULES", rules.to_owned())],
+                &[
+                    ("CAMEL", camel.clone()),
+                    ("NAME", spec.name.clone()),
+                    ("RULES", rules.to_owned()),
+                ],
             ),
             FieldKind::Bool => render(
                 r#"    {
       component: 'Switch',
       fieldName: '@@CAMEL@@',
-      label: '@@CAMEL@@',
+      label: $t('page.@@NAME@@.@@CAMEL@@'),
       componentProps: {
         class: 'w-auto',
       },
@@ -715,23 +814,31 @@ fn drawer_form_schema(spec: &PagesSpec) -> String {
                 r#"    {
       component: 'InputNumber',
       fieldName: '@@CAMEL@@',
-      label: '@@CAMEL@@',
+      label: $t('page.@@NAME@@.@@CAMEL@@'),
 @@RULES@@    },
 "#,
-                &[("CAMEL", camel.clone()), ("RULES", rules.to_owned())],
+                &[
+                    ("CAMEL", camel.clone()),
+                    ("NAME", spec.name.clone()),
+                    ("RULES", rules.to_owned()),
+                ],
             ),
             FieldKind::String => render(
                 r#"    {
       component: 'Input',
       fieldName: '@@CAMEL@@',
-      label: '@@CAMEL@@',
+      label: $t('page.@@NAME@@.@@CAMEL@@'),
 @@RULES@@      componentProps: {
         placeholder: $t('ui.placeholder.input'),
         allowClear: true,
       },
     },
 "#,
-                &[("CAMEL", camel.clone()), ("RULES", rules.to_owned())],
+                &[
+                    ("CAMEL", camel.clone()),
+                    ("NAME", spec.name.clone()),
+                    ("RULES", rules.to_owned()),
+                ],
             ),
         };
         out.push_str(&component_block);
@@ -777,6 +884,7 @@ import { useVbenForm } from '#/adapter/form';
 import {
 @@DRAWER_IMPORTS@@
 } from '#/api/composables/@@NAME@@';
+import { $t } from '#/locales';
 
 const { mutateAsync: create@@PASCAL@@ } = useCreate@@PASCAL@@();
 const { mutateAsync: update@@PASCAL@@ } = useUpdate@@PASCAL@@();
@@ -784,7 +892,9 @@ const { mutateAsync: update@@PASCAL@@ } = useUpdate@@PASCAL@@();
 const data = ref();
 
 const getTitle = computed(() =>
-  data.value?.create ? '新建 @@PASCAL@@' : '编辑 @@PASCAL@@',
+  data.value?.create
+    ? $t('page.@@NAME@@.button.create')
+    : $t('page.@@NAME@@.button.update'),
 );
 
 const [BaseForm, baseFormApi] = useVbenForm({
@@ -932,9 +1042,16 @@ mod tests {
         assert!(!drawer.contains("connectedComponent"), "连接在 index 侧");
         assert!(drawer.contains("component: 'Select'"), "枚举表单控件");
         assert!(
-            drawer.contains("fieldName: 'code',\n      label: 'code',\n      rules: 'required',")
+            drawer.contains(
+                "fieldName: 'code',\n      label: $t('page.widget.code'),\n      rules: 'required',"
+            ),
+            "code 必填且标签走 i18n：{drawer}"
         );
         assert!(drawer.contains("component: 'Switch'"), "布尔表单控件");
+        assert!(drawer.contains("$t('page.widget.button.create')"));
+        assert!(index.contains("$t('page.widget.code')"));
+        assert!(index.contains("$t('page.widget.button.create')"));
+        assert!(index.contains("$t('page.widget.moduleName')"));
     }
 
     #[test]

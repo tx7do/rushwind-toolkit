@@ -26,6 +26,9 @@ use rush_gen::undo;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+    /// 所有报告以 JSON 输出（机器可读；报告结构体全部可序列化）
+    #[arg(long, global = true)]
+    json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -312,6 +315,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    let json = cli.json;
     match cli.command {
         Commands::Adopt {
             repo,
@@ -335,7 +339,7 @@ fn run(cli: Cli) -> Result<()> {
                 keep_sync_scripts,
             };
             let report = adopt::adopt(&opts).context("adopt 失败")?;
-            render_adopt(&report, dry_run);
+            render_adopt(&report, dry_run, json);
             Ok(())
         }
         Commands::Manifest {
@@ -348,14 +352,25 @@ fn run(cli: Cli) -> Result<()> {
             let path = flavor.manifest_path(&repo);
             if rebuild {
                 let count = manifest::rebuild(&tree, &path, flavor).context("清单重建失败")?;
-                println!("已重建 {}（{count} 条）", path.display());
+                if json {
+                    println!(
+                        r#"{{ "rebuilt": true, "entries": {count}, "path": "{}" }}"#,
+                        path.display()
+                    );
+                } else {
+                    println!("已重建 {}（{count} 条）", path.display());
+                }
             } else {
                 match manifest::check(&tree, &path, flavor).context("清单校验失败")? {
                     report if report.is_ok() => {
-                        println!("OK: {} 与 {} 一致", tree.display(), path.display());
+                        if json {
+                            println!(r#"{{ "ok": true }}"#);
+                        } else {
+                            println!("OK: {} 与 {} 一致", tree.display(), path.display());
+                        }
                     }
                     report => {
-                        render_check(&report);
+                        render_check(&report, json);
                         std::process::exit(1);
                     }
                 }
@@ -379,7 +394,7 @@ fn run(cli: Cli) -> Result<()> {
                 dry_run,
             };
             let report = project::new_project(&opts).context("new 失败")?;
-            render_new(&report, dry_run);
+            render_new(&report, dry_run, json);
             Ok(())
         }
         Commands::Testbed { action } => match action {
@@ -412,7 +427,7 @@ fn run(cli: Cli) -> Result<()> {
                 }
                 if let Some(summary) = &report.summary {
                     println!();
-                    render_summary(summary);
+                    render_summary(summary, json);
                 }
                 for note in &report.notes {
                     println!("注意：{note}");
@@ -426,8 +441,10 @@ fn run(cli: Cli) -> Result<()> {
                 let path =
                     file.unwrap_or_else(|| repo.join("backend/testbed/reports/report.jsonl"));
                 let summary = testbed::summarize(&path).context("报告摘要失败")?;
-                println!("报告：{}", path.display());
-                render_summary(&summary);
+                if !json {
+                    println!("报告：{}", path.display());
+                }
+                render_summary(&summary, json);
                 Ok(())
             }
         },
@@ -472,7 +489,7 @@ fn run(cli: Cli) -> Result<()> {
                 dry_run,
             };
             let report = pages::generate_pages(&opts).context("gen pages 失败")?;
-            render_pages(&report, dry_run);
+            render_pages(&report, dry_run, json);
             Ok(())
         }
         Commands::Gen {
@@ -489,7 +506,7 @@ fn run(cli: Cli) -> Result<()> {
                 dry_run,
             };
             let report = undo::undo_entity(&opts).context("gen undo 失败")?;
-            render_undo(&report, dry_run);
+            render_undo(&report, dry_run, json);
             Ok(())
         }
         Commands::Gen {
@@ -539,12 +556,12 @@ fn run(cli: Cli) -> Result<()> {
                 auth_free,
             };
             let report = entity::generate_entity(&opts).context("gen entity 失败")?;
-            render_gen(&report, dry_run);
+            render_gen(&report, dry_run, json);
             Ok(())
         }
         Commands::Doctor { repo } => {
             let report = doctor::run_doctor(repo.as_deref());
-            render_doctor(&report);
+            render_doctor(&report, json);
             if report.has_failures() {
                 std::process::exit(1);
             }
@@ -553,7 +570,14 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn render_pages(report: &pages::PagesReport, dry_run: bool) {
+fn render_pages(report: &pages::PagesReport, dry_run: bool, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).expect("报告序列化")
+        );
+        return;
+    }
     let tag = if dry_run { "[dry-run] " } else { "" };
     if !report.created.is_empty() {
         println!("{tag}新建文件：");
@@ -578,7 +602,14 @@ fn render_pages(report: &pages::PagesReport, dry_run: bool) {
     }
 }
 
-fn render_undo(report: &undo::UndoReport, dry_run: bool) {
+fn render_undo(report: &undo::UndoReport, dry_run: bool, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).expect("报告序列化")
+        );
+        return;
+    }
     let tag = if dry_run { "[dry-run] " } else { "" };
     if !report.removed_files.is_empty() {
         println!("{tag}删除文件：");
@@ -609,7 +640,14 @@ fn render_undo(report: &undo::UndoReport, dry_run: bool) {
     }
 }
 
-fn render_doctor(report: &doctor::DoctorReport) {
+fn render_doctor(report: &doctor::DoctorReport, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).expect("报告序列化")
+        );
+        return;
+    }
     for check in &report.checks {
         let mark = match check.status {
             doctor::Status::Ok => "✓",
@@ -623,7 +661,14 @@ fn render_doctor(report: &doctor::DoctorReport) {
     }
 }
 
-fn render_summary(summary: &testbed::Summary) {
+fn render_summary(summary: &testbed::Summary, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(summary).expect("摘要序列化")
+        );
+        return;
+    }
     println!(
         "总计 {} 案例：Ok {} / Fail {} / Exempt {} / Pending {} / Unreachable {}",
         summary.total,
@@ -657,7 +702,14 @@ fn render_summary(summary: &testbed::Summary) {
     }
 }
 
-fn render_new(report: &project::NewReport, dry_run: bool) {
+fn render_new(report: &project::NewReport, dry_run: bool, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).expect("报告序列化")
+        );
+        return;
+    }
     let tag = if dry_run { "[dry-run] " } else { "" };
     println!(
         "{tag}项目目录：{}（模板：{}）",
@@ -675,7 +727,14 @@ fn render_new(report: &project::NewReport, dry_run: bool) {
     }
 }
 
-fn render_gen(report: &entity::EntityReport, dry_run: bool) {
+fn render_gen(report: &entity::EntityReport, dry_run: bool, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).expect("报告序列化")
+        );
+        return;
+    }
     let tag = if dry_run { "[dry-run] " } else { "" };
     if !report.created.is_empty() {
         println!("{tag}新建文件：");
@@ -718,7 +777,14 @@ fn render_gen(report: &entity::EntityReport, dry_run: bool) {
     }
 }
 
-fn render_adopt(report: &adopt::AdoptReport, dry_run: bool) {
+fn render_adopt(report: &adopt::AdoptReport, dry_run: bool, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).expect("报告序列化")
+        );
+        return;
+    }
     let tag = if dry_run { "[dry-run] " } else { "" };
     if let Some(count) = report.proto_entries {
         println!("{tag}proto MANIFEST：以当前树为基线重建（{count} 条）");
@@ -752,7 +818,14 @@ fn render_adopt(report: &adopt::AdoptReport, dry_run: bool) {
     println!("切勿再运行 sync 脚本——sync 要求持有上游仓且会整树覆盖，--check 会把手改当篡改。");
 }
 
-fn render_check(report: &CheckReport) {
+fn render_check(report: &CheckReport, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).expect("报告序列化")
+        );
+        return;
+    }
     for path in &report.added {
         println!("  + {path}（树上有，清单没有）");
     }

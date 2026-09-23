@@ -16,7 +16,7 @@ use crate::entity::{pascal_of, plural_of};
 use crate::{Error, Result};
 
 /// `rush gen undo` 选项。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UndoOptions {
     /// rushwind-admin 仓库根目录。
     pub repo_root: PathBuf,
@@ -417,6 +417,23 @@ pub fn undo_entity(opts: &UndoOptions) -> Result<UndoReport> {
             &mut ctx,
             &vben.join(format!("src/views/app/{group}/{plural}")),
         );
+        for lang in ["zh-CN", "en-US"] {
+            let page_json = vben.join(format!("src/locales/langs/{lang}/page.json"));
+            if page_json.is_file() {
+                edit_file(
+                    &mut ctx,
+                    &page_json,
+                    |text| {
+                        let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
+                        value.as_object_mut()?.remove(&opts.name)?;
+                        let mut out = serde_json::to_string_pretty(&value).ok()?;
+                        out.push('\n');
+                        Some(out)
+                    },
+                    "vben 文案键",
+                );
+            }
+        }
         let route_module = vben.join(format!("src/router/routes/modules/app/{group}.ts"));
         let marker = format!("#/views/app/{group}/{plural}/index.vue");
         if route_module.is_file() {
@@ -445,6 +462,12 @@ pub fn undo_entity(opts: &UndoOptions) -> Result<UndoReport> {
             &mut ctx,
             &element.join(format!("src/pages/app/{group}/{plural}")),
         );
+        for lang in ["zh-CN", "en-US"] {
+            remove_file(
+                &mut ctx,
+                &element.join(format!("src/locales/{lang}/pages/{}.json", opts.name)),
+            );
+        }
         let route_module = element.join(format!("src/router/routes/modules/app/{group}.ts"));
         let marker = format!("@/pages/app/{group}/{plural}/index.vue");
         if route_module.is_file() {

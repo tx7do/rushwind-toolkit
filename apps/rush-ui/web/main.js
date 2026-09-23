@@ -422,6 +422,8 @@ $('e-run').addEventListener('click', () => {
     code_field: codeSelect.value === '' ? null : codeSelect.value,
     global: $('e-global').checked,
     check: $('e-check').checked,
+    overwrite: $('e-regen').checked,
+    auth_free: $('e-authfree').checked,
     dry_run: $('e-dry').checked,
     skip_manifest: false,
   };
@@ -461,6 +463,8 @@ $('p-run').addEventListener('click', () => {
     fields,
     code_field: optional('p-code'),
     stack: $('p-stack').value,
+    global: $('p-global').checked ? true : null,
+    overwrite: $('p-regen').checked,
     dry_run: $('p-dry').checked,
   };
   if (!opts.repo_root) return renderError('p-result', '仓库根目录必填');
@@ -508,6 +512,54 @@ $('m-rebuild').addEventListener('click', () => {
   const repo = trimmed('m-repo');
   if (!repo) return renderError('m-result', '仓库根目录必填');
   runCommand('m-rebuild', 'm-status', 'm-result', 'manifest_rebuild', { repo, flavor: $('m-flavor').value });
+});
+
+// ---- gen undo ----
+wireRepo('u-repo', 'u-probe');
+$('u-run').addEventListener('click', () => {
+  const opts = {
+    repo_root: trimmed('u-repo'),
+    name: trimmed('u-name'),
+    dry_run: $('u-dry').checked,
+  };
+  if (!opts.repo_root) return renderError('u-result', '仓库根目录必填');
+  if (!SNAKE_RE.test(opts.name)) return renderError('u-result', `实体名须为 snake_case：${opts.name || '（空）'}`);
+  runCommand('u-run', 'u-status', 'u-result', 'gen_undo', { opts }, { dryRun: opts.dry_run });
+});
+
+// ---- doctor ----
+$('d-run').addEventListener('click', async () => {
+  const repo = trimmed('d-repo');
+  const button = $('d-run');
+  button.disabled = true;
+  $('d-status').textContent = '体检中…';
+  $('d-status').className = 'status';
+  try {
+    if (!invoke) throw new Error('未在 Tauri 环境内');
+    const report = await invoke('doctor', { repo: repo === '' ? null : repo });
+    const mark = { Ok: ['✓', 'ok'], Warn: ['⚠', ''], Fail: ['✗', 'err'] };
+    const rows = report.checks
+      .map((check) => {
+        const [symbol, cls] = mark[check.status] || ['·', ''];
+        const hint = check.hint ? `<div class="hint">↳ ${esc(check.hint)}</div>` : '';
+        return `<div class="banner ${cls}" style="margin-top: 6px; align-items: flex-start;">
+          <span>${symbol}</span>
+          <div style="flex: 1;"><strong>${esc(check.name)}</strong> — ${esc(check.detail)}${hint}</div>
+        </div>`;
+      })
+      .join('');
+    const failures = report.checks.filter((check) => check.status === 'Fail').length;
+    $('d-result').innerHTML =
+      `<div class="banner ${failures ? 'err' : 'ok'}">${failures ? `❌ ${failures} 项失败` : '✅ 全部通过'}</div>${rows}`;
+    $('d-status').textContent = failures ? `${failures} 项失败` : '全部通过';
+    $('d-status').className = `status ${failures ? 'err' : 'ok'}`;
+  } catch (error) {
+    renderError('d-result', error);
+    $('d-status').textContent = '失败';
+    $('d-status').className = 'status err';
+  } finally {
+    button.disabled = false;
+  }
 });
 
 // ---- 初始化：恢复持久化 ----

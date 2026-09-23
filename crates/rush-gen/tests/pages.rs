@@ -135,6 +135,7 @@ fn generates_pages_and_inserts_both_seed_halves() {
     second.code_field = None;
     let report = pages::generate_pages(&second).unwrap();
     assert_eq!(report.edited, vec![seed_rs.clone()]);
+    let _ = &report;
     let seed = fs::read_to_string(&seed_rs).unwrap();
     let lines: Vec<&str> = seed.lines().collect();
     let widget_at = lines
@@ -370,6 +371,11 @@ fn scaffold_vben(root: &Path) {
     let app = root.join("frontend/admin/vue-vben/apps/admin");
     fs::create_dir_all(app.join("src/views/app")).unwrap();
     fs::write(app.join("package.json"), "{}").unwrap();
+    for lang in ["zh-CN", "en-US"] {
+        let page_json = app.join(format!("src/locales/langs/{lang}/page.json"));
+        fs::create_dir_all(page_json.parent().unwrap()).unwrap();
+        fs::write(&page_json, "{}\n").unwrap();
+    }
 }
 
 fn scaffold_element(root: &Path) {
@@ -388,6 +394,13 @@ fn vben_pages_create_route_module_and_files() {
     let report = pages::generate_pages(&vben_opts(&root)).unwrap();
     let app = root.join("frontend/admin/vue-vben/apps/admin");
     assert_eq!(report.created.len(), 4, "{report:#?}");
+    assert!(
+        report
+            .edited
+            .iter()
+            .any(|p| p.ends_with("src/locales/langs/zh-CN/page.json")),
+        "双语 page.json 进 edited：{report:#?}"
+    );
     assert!(app.join("src/api/composables/widget.ts").exists());
     assert!(app.join("src/views/app/system/widgets/index.vue").exists());
     assert!(app
@@ -419,7 +432,10 @@ fn vben_pages_insert_child_into_existing_module() {
     .unwrap();
 
     let report = pages::generate_pages(&vben_opts(&root)).unwrap();
-    assert_eq!(report.edited, vec![module.clone()], "{report:#?}");
+    assert!(
+        report.edited.contains(&module) && report.edited.len() == 3,
+        "路由模块 + 双语 page.json：{report:#?}"
+    );
     let text = fs::read_to_string(&module).unwrap();
     let user_at = text.find("path: 'user',").unwrap();
     let widget_at = text.find("path: 'widgets',").unwrap();
@@ -436,10 +452,22 @@ fn element_pages_create_route_module_and_files() {
 
     let report = pages::generate_pages(&element_opts(&root)).unwrap();
     let app = root.join("frontend/admin/vue-element");
-    assert_eq!(report.created.len(), 4, "{report:#?}");
+    assert_eq!(
+        report.created.len(),
+        6,
+        "页面 + composable + 双语 locale：{report:#?}"
+    );
+    assert!(app.join("src/locales/zh-CN/pages/widget.json").exists());
+    let locale = fs::read_to_string(app.join("src/locales/zh-CN/pages/widget.json")).unwrap();
+    assert!(locale.contains("\"moduleName\": \"widget\""));
+    assert!(locale.contains("button"));
     assert!(app.join("src/api/composables/widget.ts").exists());
     let index = fs::read_to_string(app.join("src/pages/app/system/widgets/index.vue")).unwrap();
     assert!(index.contains("ProPage ref=\"pageRef\""));
+    assert!(
+        index.contains("$t(\"pages.widget.code\")"),
+        "字段标签走 i18n：{index}"
+    );
     assert!(module.exists());
 
     let module_text = fs::read_to_string(&module).unwrap();
