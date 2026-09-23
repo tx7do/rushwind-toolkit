@@ -13,7 +13,14 @@ license = "MIT"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.22"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] } # mysql 的 default-features=false 会抽掉 flate2 后端，这里统一钉住纯 Rust 后端
+mysql = { version = "25", default-features = false }
+postgres = "0.19"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "charset"] }
 rush-gen = { path = "../../crates/rush-gen" }
+rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"

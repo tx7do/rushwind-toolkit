@@ -1,6 +1,6 @@
 <script setup>
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons-vue';
-import { SNAKE_RE, UPPER_RE } from '../api.js';
+import { SNAKE_RE, UPPER_RE } from '../bridge/constants';
 
 const props = defineProps({
   fields: { type: Array, required: true }, // v-model:fields

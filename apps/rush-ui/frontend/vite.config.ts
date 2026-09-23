@@ -1,7 +1,7 @@
-import { defineConfig } from 'vite';
-import vue from '@vitejs/plugin-vue';
+import {defineConfig} from 'vite'
+import vue from '@vitejs/plugin-vue'
 
-// Tauri 前端：产物出 dist/，由 tauri.conf.json 的 frontendDist 指向。
+// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [vue()],
   clearScreen: false,
@@ -13,4 +13,4 @@ export default defineConfig({
     outDir: 'dist',
     target: 'chrome105',
   },
-});
+})
