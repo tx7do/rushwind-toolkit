@@ -691,7 +691,6 @@ fn form_items(spec: &PagesSpec) -> String {
     let mut out = String::new();
     for field in &spec.fields {
         let camel = camel_of(&field.name);
-        let label = camel.clone();
         let control = match &field.kind {
             FieldKind::Enum(_) => render(
                 r#"        <ElSelect v-model="formData.@@CAMEL@@" :placeholder="$t('common.placeholder.input')" clearable>

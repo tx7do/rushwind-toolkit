@@ -61,7 +61,7 @@ pub struct NewReport {
 }
 
 /// 内嵌模板文件：(模板内相对路径, 目标相对路径, 内容)。
-const EMBEDDED_MEMORY: [(&str, &str, &str); 5] = [
+const EMBEDDED_MEMORY: [(&str, &str, &str); 6] = [
     (
         "Cargo.toml",
         "Cargo.toml",
@@ -87,11 +87,16 @@ const EMBEDDED_MEMORY: [(&str, &str, &str); 5] = [
         "rustfmt.toml",
         include_str!("../templates/new/rustfmt.toml"),
     ),
+    (
+        "ci_yml",
+        ".github/workflows/ci.yml",
+        include_str!("../templates/new/ci_yml"),
+    ),
 ];
 
 /// SQLite 变体：与 Postgres 同为 SeaORM 动态仓库，但走内嵌 sqlite_memory
 /// （单连接 :memory:，零安装零 DSN）。
-const EMBEDDED_SQLITE: [(&str, &str, &str); 5] = [
+const EMBEDDED_SQLITE: [(&str, &str, &str); 6] = [
     (
         "Cargo.toml",
         "Cargo.toml",
@@ -117,10 +122,15 @@ const EMBEDDED_SQLITE: [(&str, &str, &str); 5] = [
         "rustfmt.toml",
         include_str!("../templates/new/rustfmt.toml"),
     ),
+    (
+        "ci_yml",
+        ".github/workflows/ci.yml",
+        include_str!("../templates/new-sqlite/ci_yml"),
+    ),
 ];
 
 /// PostgreSQL 变体：依赖加 rushwind-storage-seaorm，main 换成 SeaRepo 组装。
-const EMBEDDED_POSTGRES: [(&str, &str, &str); 5] = [
+const EMBEDDED_POSTGRES: [(&str, &str, &str); 6] = [
     (
         "Cargo.toml",
         "Cargo.toml",
@@ -145,6 +155,11 @@ const EMBEDDED_POSTGRES: [(&str, &str, &str); 5] = [
         "rustfmt.toml",
         "rustfmt.toml",
         include_str!("../templates/new/rustfmt.toml"),
+    ),
+    (
+        "ci_yml",
+        ".github/workflows/ci.yml",
+        include_str!("../templates/new-postgres/ci_yml"),
     ),
 ];
 
@@ -344,7 +359,7 @@ mod tests {
     #[test]
     fn embedded_template_renders_with_name_and_rev() {
         let files = render_embedded("myapp", StorageKind::Memory);
-        assert_eq!(files.len(), 5);
+        assert_eq!(files.len(), 6);
         let cargo = files
             .iter()
             .find(|(rel, _)| rel == "Cargo.toml")
@@ -421,10 +436,11 @@ mod tests {
             dry_run: false,
         };
         let report = new_project(&opts).unwrap();
-        assert_eq!(report.files.len(), 5);
+        assert_eq!(report.files.len(), 6);
         assert!(dir.path().join("myapp/Cargo.toml").exists());
         assert!(dir.path().join("myapp/src/main.rs").exists());
         assert!(dir.path().join("myapp/.gitignore").exists());
+        assert!(dir.path().join("myapp/.github/workflows/ci.yml").exists());
         assert!(dir.path().join("myapp/.git").is_dir(), "git init 已执行");
 
         // 目录已存在 → 明确报错
