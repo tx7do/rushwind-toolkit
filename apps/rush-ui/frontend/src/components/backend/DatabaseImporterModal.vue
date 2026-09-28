@@ -2,7 +2,8 @@
 import {reactive, ref, watch} from "vue";
 import {message} from "ant-design-vue";
 
-import {ImportDatabaseTables, SetDBConfig, TestDatabaseConnection} from "../../bridge/App";
+import {ImportDatabaseTables, PullSpecsToProject, SetDBConfig, TestDatabaseConnection} from "../../bridge/App";
+import type {database} from "../../bridge/models";
 
 const props = defineProps<{
   open?: boolean
@@ -23,6 +24,8 @@ watch(() => props.open, (val) => {
 const formRef = ref(); // 表单引用，用于验证
 const testLoading = ref(false); // 测试连接按钮的加载状态
 const importLoading = ref(false); // 导入按钮的加载状态
+const pullLoading = ref(false); // 落规格按钮的加载状态
+const pullRows = ref<database.SpecPullRow[]>([]); // 落规格报告
 
 const formData = reactive({
   dbType: 'mysql',
@@ -129,6 +132,31 @@ async function testConnection() {
   }
 }
 
+// 把库内省反推成 .rush/*.json 规格落盘到已打开项目（gen entity --regen 的
+// 真相源）。前置：先在项目页打开仓库。
+async function handlePullSpecs() {
+  try {
+    await formRef.value.validateFields(['dsn']);
+    pullLoading.value = true;
+    const rows = await PullSpecsToProject({
+      useDSN: true,
+      dsn: formData['dsn'] || '',
+      type: formData['dbType'] || '',
+      host: "", port: 0, database: "", username: "", password: "", ssl: false, dbPath: ""
+    }, []);
+    pullRows.value = rows;
+    if (rows.length === 0) {
+      message.info('没有可落规格的表（库为空或全部不可映射）');
+    } else {
+      message.success(`已落 ${rows.length} 份规格到项目 .rush/`);
+    }
+  } catch (error: unknown) {
+    message.error(typeof error === 'string' ? error : '落规格失败，请检查连接与项目状态');
+  } finally {
+    pullLoading.value = false;
+  }
+}
+
 // 重置表单
 function resetForm() {
   formData.dbType = 'mysql';
@@ -152,6 +180,9 @@ function resetForm() {
       <a-button @click="handleClose">取消</a-button>
       <a-button type="primary" :loading="testLoading" @click="testConnection">测试连接</a-button>
       <a-button type="primary" :loading="importLoading" :disabled="!formData.dsn.trim()" @click="handleCommit">导入
+      </a-button>
+      <a-button type="primary" :loading="pullLoading" :disabled="!formData.dsn.trim()" danger
+                title="内省表结构，反推 .rush/*.json 实体规格并落盘到已打开项目">落规格到项目
       </a-button>
     </template>
     <a-form
@@ -179,6 +210,25 @@ function resetForm() {
         />
       </a-form-item>
     </a-form>
+
+    <a-alert v-if="pullRows.length > 0" type="success" show-icon
+             message="规格已落盘（gen entity --regen 即可走全链）" style="margin-top: 12px"/>
+    <a-table v-if="pullRows.length > 0" :data-source="pullRows" :pagination="false" size="small"
+             style="margin-top: 8px" row-key="table">
+      <a-table-column title="表" data-index="table"/>
+      <a-table-column title="实体" data-index="name"/>
+      <a-table-column title="作用域">
+        <template #default="{ record }">{{ record.global ? '全局' : '租户' }}</template>
+      </a-table-column>
+      <a-table-column title="字段数" data-index="fields"/>
+      <a-table-column title="未翻译列">
+        <template #default="{ record }">
+          <span v-if="record.skipped.length === 0">—</span>
+          <a-tag v-for="[col, raw] in record.skipped" :key="col" color="orange">{{ col }}({{ raw }})</a-tag>
+        </template>
+      </a-table-column>
+      <a-table-column title="规格路径" data-index="path"/>
+    </a-table>
   </a-modal>
 </template>
 

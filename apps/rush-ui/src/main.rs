@@ -542,6 +542,7 @@ fn main() {
             database::get_database_tables,
             database::get_table_columns,
             database::import_database_tables,
+            database::pull_specs_to_project,
             placeholders::import_sql_tables,
             placeholders::import_go_schema_tables,
             configexport::get_remote_config_types,

@@ -130,6 +130,16 @@ export namespace database {
     table_indexes: number;
     create_time: string;
   }
+
+  export interface SpecPullRow {
+    table: string;
+    name: string;
+    global: boolean;
+    fields: number;
+    skipped: [string, string][];
+    path: string;
+    written: boolean;
+  }
 }
 
 export namespace detect {

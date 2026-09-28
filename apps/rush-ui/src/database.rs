@@ -14,7 +14,25 @@ use tauri::{AppHandle, Emitter, State};
 use crate::sqlimport::{self, SqlTable};
 use crate::{next_id, AppState, SpecFieldDto};
 
+use rush_gen::entity::plural_of;
+use rush_gen::spec;
+
 const CONNECT_TIMEOUT: u64 = 10;
+
+/// 生成器实体模型的固定尾段列（与 rush_gen::db 的排除集一致）——
+/// `gen entity` 的模板自生成这批列，内省反推规格时排除在外。
+const SPEC_TAIL_COLUMNS: &[&str] = &[
+    "id",
+    "sort_order",
+    "tenant_id",
+    "tenant_name",
+    "created_by",
+    "updated_by",
+    "deleted_by",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+];
 
 // ==================== 类型 ====================
 
@@ -555,6 +573,116 @@ pub async fn import_database_tables(
     }
     let _ = app.emit("table-imported", ());
     Ok(String::new())
+}
+
+// ==================== 规格管线打通 ====================
+
+/// 规格落盘的报告行。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpecPullRow {
+    pub table: String,
+    pub name: String,
+    pub global: bool,
+    pub fields: usize,
+    pub skipped: Vec<(String, String)>,
+    pub path: String,
+    pub written: bool,
+}
+
+/// 把库内省反推成 `.rush/<name>.json` 规格并落盘到已打开项目的仓库根
+/// ——database.rs 的内省面（MySQL/PG/SQLite 三方言）与 rush-gen 的
+/// 规格生命周期（gen entity --regen / undo 的真相源）在这里接通：
+/// 标准尾段列排除、`tenant_id` 的有无推导 global、类型映射走 UI 的
+/// sql_type_to_kind 闭集（不可映射列进 skipped 明细，不静默降级）。
+/// `only_tables` 为空 = 全部非系统表。
+#[tauri::command]
+pub async fn pull_specs_to_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    cfg: DBConfig,
+    only_tables: Vec<String>,
+) -> crate::CmdResult<Vec<SpecPullRow>> {
+    let root = {
+        let project = state.project.lock().expect("project 锁中毒");
+        match project.as_ref() {
+            Some(p) => p.root.clone(),
+            None => {
+                return Err("先打开项目——规格落在项目仓库根的 .rush/ 下".to_string());
+            }
+        }
+    };
+
+    let (engine_label, snapshot) = match blocking(move || fetch_all(&cfg)).await {
+        Ok(v) => v,
+        Err(e) => return Err(e),
+    };
+    let _ = &engine_label;
+
+    let only: std::collections::BTreeSet<String> =
+        only_tables.into_iter().collect();
+
+    let mut rows = Vec::new();
+    for entry in &snapshot.tables {
+        if !only.is_empty() && !only.contains(&entry.name) {
+            continue;
+        }
+        let global = entry.columns.iter().any(|(name, _, _)| name == "tenant_id");
+        let mut fields = Vec::new();
+        let mut skipped = Vec::new();
+        for (name, raw_type, _) in &entry.columns {
+            if SPEC_TAIL_COLUMNS.contains(&name.as_str()) {
+                continue;
+            }
+            match sqlimport::sql_type_to_kind(raw_type) {
+                Some(kind) => fields.push(SpecFieldDto {
+                    name: name.to_lowercase(),
+                    kind,
+                }),
+                None => skipped.push((name.clone(), raw_type.clone())),
+            }
+        }
+        if fields.is_empty() {
+            continue;
+        }
+        let name = sqlimport::entity_name_of(&entry.name);
+        // 串形态 → FieldKind 形态（from_parts 的输入契约）。
+        let parsed_fields: std::result::Result<Vec<rush_gen::entity::FieldSpec>, String> = fields
+            .iter()
+            .map(|f| {
+                rush_gen::entity::FieldKind::parse(&f.kind)
+                    .map(|kind| rush_gen::entity::FieldSpec {
+                        name: f.name.clone(),
+                        kind,
+                    })
+                    .ok_or_else(|| format!("字段 {} 的 kind 非法：{}", f.name, f.kind))
+            })
+            .collect();
+        let parsed_fields = parsed_fields.map_err(|e| format!("表 {}：{e}", entry.name))?;
+        let spec = spec::from_parts(
+            &name,
+            &entry.name,
+            &format!("{name}.service.v1"),
+            &format!("/admin/v1/{}", plural_of(&name)),
+            &parsed_fields,
+            None,
+            global,
+        );
+        let path = spec::save(&spec, std::path::Path::new(&root))
+            .map_err(|e| format!("规格落盘失败（{name}）：{e}"))?;
+        rows.push(SpecPullRow {
+            table: entry.name.clone(),
+            name,
+            global,
+            fields: fields.len(),
+            skipped,
+            path: path.to_string_lossy().into_owned(),
+            written: true,
+        });
+    }
+
+    let _ = app.emit("specs-pulled", &rows);
+    Ok(rows)
 }
 
 #[cfg(test)]

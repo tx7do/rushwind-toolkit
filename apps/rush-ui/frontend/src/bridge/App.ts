@@ -141,6 +141,10 @@ export function ImportDatabaseTables(cfg: database.DBConfig): Promise<string> {
   return invoke('import_database_tables', {cfg})
 }
 
+export function PullSpecsToProject(cfg: database.DBConfig, onlyTables: string[]): Promise<database.SpecPullRow[]> {
+  return invoke('pull_specs_to_project', {cfg, onlyTables})
+}
+
 export function ImportSqlTables(sql: string): Promise<string> {
   return invoke('import_sql_tables', {sql})
 }
