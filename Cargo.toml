@@ -26,3 +26,6 @@ sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
 walkdir = "2"
+# db pull:信息表/PRAGMA 内省(部署库 postgres;sqlite 供无服务测试与 --storage sqlite)。
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite", "any"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

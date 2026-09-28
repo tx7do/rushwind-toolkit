@@ -16,6 +16,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+tokio = { workspace = true }
 rush-gen = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

@@ -58,6 +58,27 @@ enum Commands {
         #[arg(long)]
         keep_sync_scripts: bool,
     },
+    /// 连接部署库，内省表结构反推实体规格（.rush/<name>.json）
+    DbPull {
+        /// 数据库 DSN（postgres://… 或 sqlite://…，env DATABASE_URL 可替）
+        #[arg(long)]
+        dsn: Option<String>,
+        /// PG 的 schema（sqlite 忽略）
+        #[arg(long, default_value = "public")]
+        schema: String,
+        /// 只拉这些表（可重复；缺省拉全部非系统表）
+        #[arg(long = "table")]
+        tables: Vec<String>,
+        /// 仓库根目录（规格落 .rush/）
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        /// 只报告不落盘
+        #[arg(long)]
+        dry_run: bool,
+        /// 结构化输出
+        #[arg(long)]
+        json: bool,
+    },
     /// 校验或重建某个同步面的 sha256 清单（默认校验）
     Manifest {
         /// 同步面
@@ -346,6 +367,47 @@ fn run(cli: Cli) -> Result<()> {
             };
             let report = adopt::adopt(&opts).context("adopt 失败")?;
             render_adopt(&report, dry_run, json);
+            Ok(())
+        }
+        Commands::DbPull {
+            dsn,
+            schema,
+            tables,
+            repo,
+            dry_run,
+            json,
+        } => {
+            let dsn = match dsn {
+                Some(d) => d,
+                None => {
+                    std::env::var("DATABASE_URL").context("缺 --dsn 且 env DATABASE_URL 未设")?
+                }
+            };
+            let only: std::collections::BTreeSet<String> = tables.into_iter().collect();
+            let runtime = tokio::runtime::Runtime::new().context("tokio runtime")?;
+            let mut report = runtime.block_on(async {
+                if dsn.starts_with("postgres://") || dsn.starts_with("postgresql://") {
+                    rush_gen::db::pull_postgres(&dsn, &schema, &only)
+                        .await
+                        .context("postgres 内省失败")
+                } else if dsn.starts_with("sqlite") {
+                    rush_gen::db::pull_sqlite(&dsn)
+                        .await
+                        .context("sqlite 内省失败")
+                } else {
+                    bail!(
+                        "无法识别的 DSN scheme（支持 postgres:// 与 sqlite://）：{}",
+                        dsn.split(':').next().unwrap_or("")
+                    );
+                }
+            })?;
+            if !dry_run {
+                for entity in &mut report.entities {
+                    entity.written_to =
+                        Some(rush_gen::spec::save(&entity.spec, &repo).context("规格落盘失败")?);
+                }
+            }
+            render_db_pull(&report, &repo, dry_run, json);
             Ok(())
         }
         Commands::Manifest {
@@ -903,6 +965,74 @@ fn watch_manifests(
             }
         }
         std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+    }
+}
+
+fn render_db_pull(
+    report: &rush_gen::db::PullReport,
+    repo: &std::path::Path,
+    dry_run: bool,
+    json: bool,
+) {
+    if json {
+        let entities: Vec<serde_json::Value> = report
+            .entities
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "name": e.spec.name,
+                    "table": e.spec.table,
+                    "global": e.spec.global,
+                    "fields": e.spec.fields.len(),
+                    "skipped": e.skipped,
+                    "path": rush_gen::spec::spec_path(repo, &e.spec.name),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "dry_run": dry_run,
+                "entities": entities,
+                "excluded_tables": report.excluded_tables,
+            })
+        );
+        return;
+    }
+    for entity in &report.entities {
+        let kinds: Vec<String> = entity
+            .spec
+            .fields
+            .iter()
+            .map(|f| format!("{}:{}", f.name, f.kind))
+            .collect();
+        println!(
+            "{} [{}]（{}）: {}",
+            entity.spec.name,
+            if entity.spec.global {
+                "全局"
+            } else {
+                "租户"
+            },
+            entity.spec.table,
+            kinds.join(", ")
+        );
+        for (column, raw) in &entity.skipped {
+            println!("    ~ {column}（{raw}）——词汇表之外，未翻译");
+        }
+        match &entity.written_to {
+            Some(path) => println!("    已写入 {}", path.display()),
+            None => println!(
+                "    将写入 {}",
+                rush_gen::spec::spec_path(repo, &entity.spec.name).display()
+            ),
+        }
+    }
+    if !report.excluded_tables.is_empty() {
+        println!("排除系统表：{}", report.excluded_tables.join(", "));
+    }
+    if !dry_run {
+        println!("提示：规格就位后 rush gen entity <name> --regen 即可落全链产物");
     }
 }
 

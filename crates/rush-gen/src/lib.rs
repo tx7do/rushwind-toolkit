@@ -9,6 +9,7 @@
 //!   真相，gen entity 落盘、gen pages 读取，UI 表单回填的数据源。
 
 pub mod adopt;
+pub mod db;
 pub mod doctor;
 pub mod entity;
 pub mod manifest;
