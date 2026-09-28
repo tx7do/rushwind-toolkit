@@ -84,7 +84,7 @@ pub fn parse_manifest(text: &str) -> Result<Vec<Entry>> {
 }
 
 /// 校验结果：相对清单多出 / 缺失 / 改动的路径（均为排序后的相对路径）。
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckReport {
     pub added: Vec<String>,
     pub removed: Vec<String>,

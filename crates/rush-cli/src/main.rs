@@ -69,6 +69,12 @@ enum Commands {
         /// 以当前树为基线重建清单
         #[arg(long)]
         rebuild: bool,
+        /// 持续监控：漂移出现/消失/变化时即时报（Ctrl-C 停止）
+        #[arg(long)]
+        watch: bool,
+        /// watch 的轮询间隔（秒）
+        #[arg(long, default_value_t = 2)]
+        interval_secs: u64,
     },
     /// 从模板创建一个新的 RushWind 服务项目（内嵌模板开箱即跑，
     /// `--template` 可指定任意外部模板目录并按其包名重命名）
@@ -346,11 +352,15 @@ fn run(cli: Cli) -> Result<()> {
             flavor,
             repo,
             rebuild,
+            watch,
+            interval_secs,
         } => {
             let flavor = Flavor::from(flavor);
             let tree = flavor.tree_path(&repo);
             let path = flavor.manifest_path(&repo);
-            if rebuild {
+            if watch {
+                watch_manifests(flavor, &tree, &path, interval_secs, json);
+            } else if rebuild {
                 let count = manifest::rebuild(&tree, &path, flavor).context("清单重建失败")?;
                 if json {
                     println!(
@@ -818,6 +828,84 @@ fn render_adopt(report: &adopt::AdoptReport, dry_run: bool, json: bool) {
     println!("切勿再运行 sync 脚本——sync 要求持有上游仓且会整树覆盖，--check 会把手改当篡改。");
 }
 
+/// watch 的一次输出事件（相邻两次校验的漂移差异）：首轮即报当前
+/// 状态，之后只在状态翻转（OK↔DRIFT）或漂移集变化时输出，持续的
+/// 同一份漂移静默。
+#[derive(Debug, PartialEq, Eq)]
+enum WatchEvent {
+    Ok,
+    Drift(CheckReport),
+    Change(CheckReport),
+}
+
+/// 相邻两轮之间值得输出的事件；`None` = 无变化（静默续轮）。
+fn watch_event(previous: Option<&CheckReport>, current: &CheckReport) -> Option<WatchEvent> {
+    let event = match previous {
+        None if current.is_ok() => WatchEvent::Ok,
+        None => WatchEvent::Drift(current.clone()),
+        Some(prev) => match (prev.is_ok(), current.is_ok()) {
+            (false, true) => WatchEvent::Ok,
+            (true, false) => WatchEvent::Drift(current.clone()),
+            (false, false) if prev != current => WatchEvent::Change(current.clone()),
+            _ => return None,
+        },
+    };
+    Some(event)
+}
+
+fn watch_manifests(
+    flavor: Flavor,
+    tree: &std::path::Path,
+    path: &std::path::Path,
+    interval_secs: u64,
+    json: bool,
+) {
+    let flavor_label = match flavor {
+        Flavor::Proto => "proto",
+        Flavor::React => "react",
+    };
+    println!(
+        "watching {flavor_label}: {}（每 {interval_secs}s 一轮，Ctrl-C 停止）",
+        tree.display()
+    );
+    let mut previous: Option<CheckReport> = None;
+    loop {
+        match manifest::check(tree, path, flavor) {
+            Ok(current) => {
+                if let Some(event) = watch_event(previous.as_ref(), &current) {
+                    if json {
+                        let kind = match &event {
+                            WatchEvent::Ok => "ok",
+                            WatchEvent::Drift(_) => "drift",
+                            WatchEvent::Change(_) => "change",
+                        };
+                        let line = serde_json::json!({ "event": kind, "report": current });
+                        println!("{line}");
+                    } else {
+                        match event {
+                            WatchEvent::Ok => println!("OK: 树与清单一致"),
+                            WatchEvent::Drift(_) => {
+                                println!("DRIFT:");
+                                render_check(&current, false);
+                            }
+                            WatchEvent::Change(_) => {
+                                println!("CHANGE:");
+                                render_check(&current, false);
+                            }
+                        }
+                    }
+                }
+                previous = Some(current);
+            }
+            Err(err) => {
+                eprintln!("watch: {err}");
+                std::process::exit(1);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+    }
+}
+
 fn render_check(report: &CheckReport, json: bool) {
     if json {
         println!(
@@ -841,4 +929,59 @@ fn render_check(report: &CheckReport, json: bool) {
         report.removed.len(),
         report.modified.len()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::watch_event;
+    use rush_gen::manifest::CheckReport;
+
+    fn report(added: &[&str], modified: &[&str]) -> CheckReport {
+        CheckReport {
+            added: added.iter().map(|s| s.to_string()).collect(),
+            removed: vec![],
+            modified: modified.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn first_round_reports_the_current_state() {
+        assert_eq!(
+            watch_event(None, &report(&[], &[])),
+            Some(super::WatchEvent::Ok)
+        );
+        assert_eq!(
+            watch_event(None, &report(&["new.proto"], &[])),
+            Some(super::WatchEvent::Drift(report(&["new.proto"], &[])))
+        );
+    }
+
+    #[test]
+    fn flips_report_once_then_silences() {
+        let drift = report(&["a"], &[]);
+        // OK→DRIFT reports; the same drift is silent.
+        assert_eq!(
+            watch_event(Some(&report(&[], &[])), &drift),
+            Some(super::WatchEvent::Drift(drift.clone()))
+        );
+        assert_eq!(watch_event(Some(&drift), &drift), None);
+    }
+
+    #[test]
+    fn drift_set_change_reports_change() {
+        let old = report(&["a"], &[]);
+        let new = report(&["a", "b"], &["c"]);
+        assert_eq!(
+            watch_event(Some(&old), &new),
+            Some(super::WatchEvent::Change(new.clone()))
+        );
+    }
+
+    #[test]
+    fn recovery_reports_ok_once() {
+        assert_eq!(
+            watch_event(Some(&report(&["a"], &[])), &report(&[], &[])),
+            Some(super::WatchEvent::Ok)
+        );
+    }
 }
