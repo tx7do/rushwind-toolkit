@@ -16,8 +16,10 @@ use walkdir::WalkDir;
 
 use crate::{Error, Result};
 
-/// 模板钉住的 rushwind 框架 rev（与 rushwind-admin 的 workspace 依赖一致）。
-pub const PINNED_RUSHWIND_REV: &str = "2bc3a96c742539a195b608b995be1c3bcc1545a3";
+/// 模板钉住的 rushwind 框架 rev（与 rushwind-admin 的 workspace 依赖一致；
+/// 升钉时同步核对新 rev 下 storage/bootstrap/transport 契约未破坏——
+/// rush new 产物的可编译性由 project::tests 的树断言与实弹 probe 把守）。
+pub const PINNED_RUSHWIND_REV: &str = "e5e08915dcdfb0d963e62c5495f0161a79b5ecdd";
 
 /// 内嵌模板的存储变体。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
