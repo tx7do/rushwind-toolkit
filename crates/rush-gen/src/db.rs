@@ -227,7 +227,7 @@ pub async fn pull_postgres(dsn: &str, schema: &str, only: &BTreeSet<String>) -> 
         let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
             "SELECT a.attname AS column_name, \
                     pg_catalog.format_type(a.atttypid, a.atttypmod) AS full_type, \
-                    COALESCE(t.typtype, 'b') AS typtype, \
+                    COALESCE(t.typtype, 'b')::text AS typtype, \
                     pg_get_expr(d.adbin, d.adrelid) AS column_default \
              FROM pg_attribute a \
              JOIN pg_class c ON c.oid = a.attrelid \
