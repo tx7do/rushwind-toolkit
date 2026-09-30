@@ -12,11 +12,14 @@
 //! 约定：连接测试/审查/DDL 返回 `StepResult`（success + content/error），
 //! 划分返回 `PartitionResult`，落地返回 String（`''` 成功）。
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
+
+use reqwest::blocking::RequestBuilder;
 
 use crate::sqlimport;
 use crate::AppState;
@@ -169,7 +172,7 @@ fn build_body(cfg: &AIConfig, messages: &[(&str, String)], stream: bool) -> serd
     body
 }
 
-fn apply_auth(request: reqwest::blocking::RequestBuilder, cfg: &AIConfig) -> reqwest::blocking::RequestBuilder {
+fn apply_auth(request: RequestBuilder, cfg: &AIConfig) -> RequestBuilder {
     if cfg.api_key.trim().is_empty() {
         request
     } else if cfg.provider.eq_ignore_ascii_case("azure") {
@@ -349,7 +352,10 @@ pub async fn test_ai_connection(state: State<'_, AppState>) -> crate::CmdResult<
 }
 
 #[tauri::command]
-pub async fn ai_generate_ddl(state: State<'_, AppState>, file: String) -> crate::CmdResult<StepResult> {
+pub async fn ai_generate_ddl(
+    state: State<'_, AppState>,
+    file: String,
+) -> crate::CmdResult<StepResult> {
     let cfg = state.ai_config.lock().expect("ai_config 锁中毒").clone();
     Ok(blocking(move || match require_config(&cfg) {
         Ok(()) => match chat(
@@ -368,7 +374,11 @@ pub async fn ai_generate_ddl(state: State<'_, AppState>, file: String) -> crate:
 }
 
 #[tauri::command]
-pub async fn ai_generate_ddl_stream(app: AppHandle, state: State<'_, AppState>, file: String) -> crate::CmdResult<StepResult> {
+pub async fn ai_generate_ddl_stream(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    file: String,
+) -> crate::CmdResult<StepResult> {
     let cfg = state.ai_config.lock().expect("ai_config 锁中毒").clone();
     Ok(blocking(move || {
         if let Err(e) = require_config(&cfg) {
@@ -401,7 +411,10 @@ struct StreamDelta<'a> {
 }
 
 #[tauri::command]
-pub async fn ai_partition_microservices(state: State<'_, AppState>, input: String) -> crate::CmdResult<PartitionResult> {
+pub async fn ai_partition_microservices(
+    state: State<'_, AppState>,
+    input: String,
+) -> crate::CmdResult<PartitionResult> {
     let cfg = state.ai_config.lock().expect("ai_config 锁中毒").clone();
     Ok(blocking(move || {
         if let Err(e) = require_config(&cfg) {
@@ -413,7 +426,11 @@ pub async fn ai_partition_microservices(state: State<'_, AppState>, input: Strin
         ) {
             Ok(text) => match parse_partitions(&text) {
                 Ok(partitions) => PartitionResult { success: true, partitions, error: None },
-                Err(e) => PartitionResult { success: false, partitions: Vec::new(), error: Some(e) },
+                Err(e) => PartitionResult {
+                    success: false,
+                    partitions: Vec::new(),
+                    error: Some(e),
+                },
             },
             Err(e) => PartitionResult { success: false, partitions: Vec::new(), error: Some(e) },
         }
@@ -565,7 +582,10 @@ fn collect_openapi(dir: &std::path::Path, out: &mut Vec<String>) {
 }
 
 #[tauri::command]
-pub async fn ai_review_code(state: State<'_, AppState>, files: std::collections::HashMap<String, String>) -> crate::CmdResult<StepResult> {
+pub async fn ai_review_code(
+    state: State<'_, AppState>,
+    files: HashMap<String, String>,
+) -> crate::CmdResult<StepResult> {
     let cfg = state.ai_config.lock().expect("ai_config 锁中毒").clone();
     let prompt = render_review_prompt(&files);
     Ok(blocking(move || match require_config(&cfg) {
@@ -608,7 +628,7 @@ pub async fn ai_review_code_stream(
 }
 
 /// 前端可以只给路径（值为空串）：这时由后端读盘补内容（单文件截 64K 字符）。
-fn resolve_review_files(files: &std::collections::HashMap<String, String>) -> Vec<(String, String)> {
+fn resolve_review_files(files: &HashMap<String, String>) -> Vec<(String, String)> {
     let mut entries: Vec<(String, String)> = files
         .iter()
         .map(|(path, content)| {

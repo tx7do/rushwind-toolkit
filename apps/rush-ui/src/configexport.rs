@@ -175,14 +175,20 @@ fn export_service(
             .map_err(|e| format!("读取 {file} 失败：{e}"))?;
         match cfg.r#type.to_lowercase().as_str() {
             "consul" => {
-                let url = format!("{}/v1/kv/{}", normalize_endpoint(cfg)?, key_path(cfg, &info.name, file));
+                let url = format!(
+                    "{}/v1/kv/{}",
+                    normalize_endpoint(cfg)?,
+                    key_path(cfg, &info.name, file)
+                );
                 let response = client
                     .put(&url)
                     .body(content)
                     .send()
                     .map_err(|e| format!("Consul 请求失败：{e}"))?;
                 // Consul 成功返回 "true"；其余原样回显错误。
-                if !response.status().is_success() || response.text().unwrap_or_default().trim() != "true" {
+                if !response.status().is_success()
+                    || response.text().unwrap_or_default().trim() != "true"
+                {
                     return Err(format!("Consul 写入 {file} 失败（检查地址/token/KV 开关）"));
                 }
             }
@@ -199,7 +205,10 @@ fn export_service(
                     .map_err(|e| format!("etcd 请求失败：{e}"))?;
                 if !response.status().is_success() {
                     let text = response.text().unwrap_or_default();
-                    return Err(format!("etcd 写入 {file} 失败：{}", text.chars().take(200).collect::<String>()));
+                    return Err(format!(
+                        "etcd 写入 {file} 失败：{}",
+                        text.chars().take(200).collect::<String>()
+                    ));
                 }
             }
             "nacos" => {
@@ -227,7 +236,9 @@ fn export_service(
                     .form(&form)
                     .send()
                     .map_err(|e| format!("Nacos 请求失败：{e}"))?;
-                if !response.status().is_success() || response.text().unwrap_or_default().trim() != "true" {
+                if !response.status().is_success()
+                    || response.text().unwrap_or_default().trim() != "true"
+                {
                     return Err(format!("Nacos 写入 {file} 失败（检查命名空间/分组/权限）"));
                 }
             }

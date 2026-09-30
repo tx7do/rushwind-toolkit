@@ -285,7 +285,8 @@ fn fetch_mysql(dsn: &str) -> Result<DbSnapshot, String> {
 
     let rows = conn
         .query_iter(
-            "SELECT TABLE_NAME, IFNULL(ENGINE,''), CAST(IFNULL(TABLE_ROWS,0) AS SIGNED), IFNULL(TABLE_COMMENT,'') \
+            "SELECT TABLE_NAME, IFNULL(ENGINE,''), \
+             CAST(IFNULL(TABLE_ROWS,0) AS SIGNED), IFNULL(TABLE_COMMENT,'') \
              FROM information_schema.TABLES \
              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' \
              ORDER BY TABLE_NAME",
@@ -395,7 +396,10 @@ fn fetch_sqlite(path: &str) -> Result<DbSnapshot, String> {
     };
 
     let mut names: Vec<String> = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' \
+             AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
         .map_err(err_text)?
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(err_text)?

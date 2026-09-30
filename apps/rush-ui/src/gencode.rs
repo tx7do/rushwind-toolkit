@@ -60,7 +60,11 @@ fn package_of(strategy: &str, row: &GeneratorOption, name: &str) -> Option<Strin
 }
 
 #[tauri::command]
-pub fn generate_grpc_code(state: State<AppState>, strategy: String, servers: Vec<String>) -> String {
+pub fn generate_grpc_code(
+    state: State<AppState>,
+    strategy: String,
+    servers: Vec<String>,
+) -> String {
     let (root, rows) = match collect_rows(&state) {
         Ok(pair) => pair,
         Err(e) => return e,

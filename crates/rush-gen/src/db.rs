@@ -287,11 +287,13 @@ pub async fn pull_sqlite(dsn: &str) -> Result<PullReport> {
         .await
         .map_err(|e| Error::InvalidInput(format!("连接失败：{e}")))?;
 
-    let rows: Vec<(String,)> =
-        sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-            .fetch_all(&pool)
-            .await
-            .map_err(|e| Error::InvalidInput(format!("内省表清单失败：{e}")))?;
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type = 'table' \
+         AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| Error::InvalidInput(format!("内省表清单失败：{e}")))?;
 
     let mut excluded = Vec::new();
     let mut entities = Vec::new();

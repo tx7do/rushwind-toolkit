@@ -189,7 +189,10 @@ fn import_spec_tables(app: AppHandle, state: State<AppState>, names: Vec<String>
                     if let Some(row) =
                         options.iter_mut().find(|row| row.table_name == file.name)
                     {
-                        *row = GeneratorOption { id: row.id, ..GeneratorOption::from_spec(0, &file) };
+                        *row = GeneratorOption {
+                            id: row.id,
+                            ..GeneratorOption::from_spec(0, &file)
+                        };
                     } else {
                         let id = next_id(&options);
                         options.push(GeneratorOption::from_spec(id, &file));
@@ -298,7 +301,11 @@ impl PagesOptionsDto {
 // ==================== 项目命令 ====================
 
 #[tauri::command]
-fn open_project(app: AppHandle, state: State<AppState>, path: String) -> CmdResult<OpenProjectResult> {
+fn open_project(
+    app: AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> CmdResult<OpenProjectResult> {
     let root = PathBuf::from(path.trim());
     if root.as_os_str().is_empty() || !root.is_dir() {
         return Err(format!("目录不存在：{}", root.display()));
