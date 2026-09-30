@@ -34,9 +34,10 @@ cargo install --git https://github.com/tx7do/rushwind-toolkit rush-cli
 | 命令 | 状态 | 说明 |
 |---|---|---|
 | `rush adopt` | ✅ | 把 rushwind-admin 快照从“上游镜像”接管为下游自有仓 |
-| `rush manifest` | ✅ | 校验 / 重建 proto 与 react 两个同步面的 sha256 清单 |
+| `rush manifest` | ✅ | 校验 / 重建 proto 与 react 两个同步面的 sha256 清单；`--watch` 持续监控漂移（状态迁移才报，ndjson 可选） |
 | `rush gen entity` | ✅ | 领域实体后端全链生成 |
-| `rush new` | ✅ | 从模板创建可编译、可直接 cargo run 的新项目（memory / postgres 双变体） |
+| `rush db pull` | ✅ | 连部署库（postgres / sqlite）内省表结构，反推 `.rush/*.json` 实体规格——原生 enum 标签零基映射，拒译列进 skipped 明细 |
+| `rush new` | ✅ | 从模板创建可编译、可直接 cargo run 的新项目（memory / sqlite / postgres 三变体，自带 CI 工作流样板） |
 | `rush gen pages` | ✅ | React 前端 CRUD 页面组生成（自包含类型，不依赖上游 TS 客户端） |
 | `rush testbed` | ✅ | 差分台架编排与报告摘要（绝不代启 docker） |
 
