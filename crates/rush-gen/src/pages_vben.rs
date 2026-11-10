@@ -87,13 +87,21 @@ fn render(template: &str, vars: &[(&str, String)]) -> String {
 }
 
 pub(crate) fn generate(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesReport> {
-    let app_root = opts.repo_root.join("frontend/admin/vue-vben/apps/admin");
-    if !app_root.join("package.json").is_file() {
+    // app 根双形态：上游 monorepo 的 app 在 apps/admin（package.json 在那里），
+    // rushwind-admin 快照把 app 源码摊在 monorepo 根（src/views、src/api、
+    // package.json 全在仓根，apps/admin 只剩 node_modules 残根）——按
+    // package.json 的在位层解析，两种布局都命中。
+    let vben_root = opts.repo_root.join("frontend/admin/vue-vben");
+    let app_root = if vben_root.join("apps/admin/package.json").is_file() {
+        vben_root.join("apps/admin")
+    } else if vben_root.join("package.json").is_file() {
+        vben_root
+    } else {
         return Err(Error::InvalidInput(format!(
-            "目标仓缺少 vue-vben 前端：{}（frontend/admin/vue-vben/apps/admin 不在位？）",
-            app_root.display()
+            "目标仓缺少 vue-vben 前端：{}（apps/admin/package.json 或根 package.json 都不在位？）",
+            vben_root.display()
         )));
-    }
+    };
 
     let view_dir = app_root
         .join("src/views/app")
@@ -605,7 +613,12 @@ fn index_imports(spec: &PagesSpec) -> String {
     names.push(format!("useDelete{}", spec.pascal));
     let mut sorted: Vec<String> = names;
     sorted.sort();
-    sorted.join(",\n  ")
+    // 逐名带缩进+尾逗号：首名也不能顶格（import { 换行后直接是名字）。
+    sorted
+        .iter()
+        .map(|name| format!("  {name},"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn index_vue(spec: &PagesSpec) -> String {
@@ -626,7 +639,7 @@ import {
 @@INDEX_IMPORTS@@
 } from '#/api/composables/@@NAME@@';
 import { PaginationQuery } from '#/transport/rest';
-import { $t } from '#/locales';
+import { $t } from '@vben/locales';
 
 import @@PASCAL@@Drawer from './@@NAME@@-drawer.vue';
 
@@ -873,7 +886,12 @@ fn drawer_imports(spec: &PagesSpec) -> String {
         }
     }
     names.sort();
-    names.join(",\n  ")
+    // 逐名带缩进+尾逗号：首名也不能顶格（import { 换行后直接是名字）。
+    names
+        .iter()
+        .map(|name| format!("  {name},"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn drawer_vue(spec: &PagesSpec) -> String {
@@ -890,7 +908,6 @@ import { useVbenForm } from '#/adapter/form';
 import {
 @@DRAWER_IMPORTS@@
 } from '#/api/composables/@@NAME@@';
-import { $t } from '#/locales';
 
 const { mutateAsync: create@@PASCAL@@ } = useCreate@@PASCAL@@();
 const { mutateAsync: update@@PASCAL@@ } = useUpdate@@PASCAL@@();
@@ -1058,6 +1075,19 @@ mod tests {
         assert!(index.contains("$t('page.widget.code')"));
         assert!(index.contains("$t('page.widget.button.create')"));
         assert!(index.contains("$t('page.widget.moduleName')"));
+        assert!(
+            index.contains("import { $t } from '@vben/locales';"),
+            "$t 别名对齐 house（@vben/locales）：{index}"
+        );
+        assert!(
+            !drawer.contains("#/locales")
+                && drawer.matches("$t } from '@vben/locales';").count() == 1,
+            "抽屉只从 @vben/locales 导一次 $t：{drawer}"
+        );
+        assert!(
+            drawer.contains("\n  stateOptions,"),
+            "composable 导入逐名缩进：{drawer}"
+        );
     }
 
     #[test]
