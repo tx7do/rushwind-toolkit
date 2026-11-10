@@ -170,11 +170,13 @@ fn validate(opts: &PagesOptions) -> Result<PagesSpec> {
     })
 }
 
-/// TS 字段类型（protojson 线上形状；枚举按 i32 数值传输）。
+/// TS 字段类型（protojson 线上形状；枚举按 proto3 JSON 规则传名字字符串，
+/// 与 pbjson 生成的 serde 一致——数字只在写入侧被容忍，读取侧一律名字）。
 fn ts_type(kind: &FieldKind) -> &'static str {
     match kind {
         FieldKind::String => "string",
-        FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Enum(_) => "number",
+        FieldKind::Int32 | FieldKind::Uint32 => "number",
+        FieldKind::Enum(_) => "string",
         FieldKind::Bool => "boolean",
         FieldKind::Float64 => "number",
     }
@@ -460,7 +462,8 @@ export interface {pascal} {{
 
 export interface List{pascal}Response {{
   items?: {pascal}[];
-  total?: number;
+  // uint64 在 proto3 JSON 下序列化为字符串（对齐 pbjson serde），消费侧 Number() 转回
+  total?: string;
 }}
 
 function listQueryString(query: PaginationQuery) {{
@@ -566,10 +569,15 @@ fn constants_entries(spec: &PagesSpec) -> String {
             FieldKind::Enum(values) => {
                 let camel = camel_of(&field.name);
                 out.push_str(&format!("export const {camel}Options = [\n"));
-                for (num, text) in &values.values {
-                    out.push_str(&format!("  {{ label: '{text}', value: {num} }},\n"));
+                for (_, text) in &values.values {
+                    // value 用枚举名（protojson 线上形状），与 pbjson 的
+                    // serialize_str 对齐；proto enum 变体名即取值文本。
+                    out.push_str(&format!("  {{ label: '{text}', value: '{text}' }},\n"));
                 }
-                out.push_str(&format!("];\n\nexport const {camel}Color = (value?: number) =>\n  ({camel}Options.find((option) => option.value === value)?.value ?? 0) === 0 ? 'default' : 'green';\n\nexport const {camel}Label = (value?: number) =>\n  {camel}Options.find((option) => option.value === value)?.label ?? String(value ?? 0);\n\n"));
+                out.push_str(&format!(
+                    "];\n\nexport const {camel}Color = (value?: string) =>\n  ({camel}Options.find((option) => option.value === value)?.value ?? '{default}') === '{default}' ? 'default' : 'green';\n\nexport const {camel}Label = (value?: string) =>\n  {camel}Options.find((option) => option.value === value)?.label ?? value;\n\n",
+                    default = values.default
+                ));
             }
             _ => {}
         }
@@ -782,7 +790,7 @@ const {pascal}List: React.FC = () => {{
 
               return {{
                 data: response.items || [],
-                total: response.total || 0,
+                total: Number(response.total ?? 0),
                 success: true,
               }};
             }} catch (error: any) {{
@@ -1312,7 +1320,10 @@ mod tests {
         assert!(hooks.contains("path: `admin/v1/widgets/${id}`"));
         assert!(hooks.contains("makeUpdateMask(Object.keys(values ?? {}))"));
         assert!(hooks.contains("export interface Widget {"));
-        assert!(hooks.contains("state?: number;"), "枚举线上形状是 i32 数值");
+        assert!(
+            hooks.contains("state?: string;"),
+            "枚举线上形状是名字字符串"
+        );
     }
 
     #[test]

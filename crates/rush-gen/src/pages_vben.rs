@@ -320,15 +320,18 @@ fn helper_code(spec: &PagesSpec) -> String {
         match &field.kind {
             FieldKind::Enum(values) => {
                 out.push_str(&format!("export const {camel}Options = [\n"));
-                for (num, text) in &values.values {
-                    out.push_str(&format!("  {{ label: '{text}', value: {num} }},\n"));
+                for (_, text) in &values.values {
+                    // value 用枚举名（protojson 线上形状），与 pbjson 的
+                    // serialize_str 对齐；proto enum 变体名即取值文本。
+                    out.push_str(&format!("  {{ label: '{text}', value: '{text}' }},\n"));
                 }
                 out.push_str("];\n\n");
                 out.push_str(&format!(
-                    "export function {camel}ToColor(value?: number) {{\n  return (({camel}Options.find((option) => option.value === value)?.value ?? 0)) === 0 ? 'default' : 'processing';\n}}\n\n"
+                    "export function {camel}ToColor(value?: string) {{\n  return (({camel}Options.find((option) => option.value === value)?.value ?? '{default}')) === '{default}' ? 'default' : 'processing';\n}}\n\n",
+                    default = values.default
                 ));
                 out.push_str(&format!(
-                    "export function {camel}ToLabel(value?: number) {{\n  return {camel}Options.find((option) => option.value === value)?.label ?? String(value ?? 0);\n}}\n\n"
+                    "export function {camel}ToLabel(value?: string) {{\n  return {camel}Options.find((option) => option.value === value)?.label ?? value;\n}}\n\n"
                 ));
             }
             FieldKind::Bool => {
@@ -369,7 +372,8 @@ export interface @@PASCAL@@ {
 
 export interface List@@PASCAL@@Response {
   items?: @@PASCAL@@[];
-  total?: number;
+  // uint64 在 proto3 JSON 下序列化为字符串（对齐 pbjson serde），消费侧 Number() 转回
+  total?: string;
 }
 
 function listQueryString(query: PaginationQuery) {
@@ -654,7 +658,7 @@ const gridOptions: VxeGridProps = {
   proxyConfig: {
     ajax: {
       query: async ({ page }, formValues) => {
-        return await fetch@@PASCAL@@List(
+        const result = await fetch@@PASCAL@@List(
           new PaginationQuery({
             paging: {
               page: page.currentPage,
@@ -663,6 +667,8 @@ const gridOptions: VxeGridProps = {
             formValues,
           }),
         );
+        // uint64 total 在 proto3 JSON 下是字符串，网格分页要数字
+        return { items: result.items ?? [], total: Number(result.total ?? 0) };
       },
     },
   },
@@ -1015,7 +1021,7 @@ mod tests {
     fn composable_is_self_contained_with_helpers() {
         let file = composable_file(&spec());
         assert!(file.contains("export interface Widget {"));
-        assert!(file.contains("state?: number;"), "枚举线上形状是 i32 数值");
+        assert!(file.contains("state?: string;"), "枚举线上形状是名字字符串");
         assert!(
             file.contains("} from '#/transport/rest';"),
             "vben 别名导入：{file}"

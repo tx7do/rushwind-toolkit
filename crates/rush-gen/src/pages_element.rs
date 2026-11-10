@@ -227,15 +227,18 @@ fn helper_code(spec: &PagesSpec) -> String {
         match &field.kind {
             FieldKind::Enum(values) => {
                 out.push_str(&format!("export const {camel}Options = [\n"));
-                for (num, text) in &values.values {
-                    out.push_str(&format!("  {{ label: \"{text}\", value: {num} }},\n"));
+                for (_, text) in &values.values {
+                    // value 用枚举名（protojson 线上形状），与 pbjson 的
+                    // serialize_str 对齐；proto enum 变体名即取值文本。
+                    out.push_str(&format!("  {{ label: \"{text}\", value: \"{text}\" }},\n"));
                 }
                 out.push_str("];\n\n");
                 out.push_str(&format!(
-                    "export function {camel}ToColor(value?: number) {{\n  return (({camel}Options.find((option) => option.value === value)?.value ?? 0)) === 0 ? \"info\" : \"success\";\n}}\n\n"
+                    "export function {camel}ToColor(value?: string) {{\n  return (({camel}Options.find((option) => option.value === value)?.value ?? \"{default}\")) === \"{default}\" ? \"info\" : \"success\";\n}}\n\n",
+                    default = values.default
                 ));
                 out.push_str(&format!(
-                    "export function {camel}ToLabel(value?: number) {{\n  return {camel}Options.find((option) => option.value === value)?.label ?? String(value ?? 0);\n}}\n\n"
+                    "export function {camel}ToLabel(value?: string) {{\n  return {camel}Options.find((option) => option.value === value)?.label ?? value;\n}}\n\n"
                 ));
             }
             FieldKind::Bool => {
@@ -285,7 +288,8 @@ export interface @@PASCAL@@ {
 
 export interface List@@PASCAL@@Response {
   items?: @@PASCAL@@[];
-  total?: number;
+  // uint64 在 proto3 JSON 下序列化为字符串（对齐 pbjson serde），消费侧 Number() 转回
+  total?: string;
 }
 
 function listQueryString(query: PaginationQuery) {
@@ -493,11 +497,9 @@ fn table_slots(spec: &PagesSpec) -> String {
     out
 }
 
-/// index.vue 的 barrel 导入（createPagedExportAction 在 house 桶里）；
-/// 布尔/枚举渲染助手在本实体的 composable 文件里，不走 barrel。
-fn barrel_imports(_spec: &PagesSpec) -> String {
-    "createPagedExportAction".to_owned()
-}
+/// index.vue 无 barrel 导入：导出全部由 ProPage 的 defaultToolbar
+/// ["exports"] + listAction 聚合驱动（house 形态），布尔/枚举渲染助手
+/// 在本实体的 composable 文件里，不走 barrel。
 
 /// 本实体 composable 文件的页面级导入（fetch/删除 + 渲染助手）。
 fn composable_imports(spec: &PagesSpec) -> String {
@@ -552,7 +554,6 @@ import ProPage from "@/components/Pro/ProPage/index.vue";
 import type { ProPageConfig } from "@/components/Pro/ProPage/types";
 import @@PASCAL@@Drawer from "./@@NAME@@-drawer.vue";
 
-import { @@BARREL_IMPORTS@@ } from "@/api/composables";
 import {
 @@COMPOSABLE_IMPORTS@@
 } from "@/api/composables/@@NAME@@";
@@ -581,12 +582,11 @@ const pageConfig = computed<ProPageConfig>(() => ({
           formValues: queryParams,
         })
       );
-      return { items: result.items || [], total: result.total || 0 };
+      return { items: result.items || [], total: Number(result.total ?? 0) };
     },
     deleteAction: async (ids: string) => {
       await delete@@PASCAL@@({ ids: ids.split(",").map((item) => Number(item)) });
     },
-    exportsAction: createPagedExportAction(fetch@@PASCAL@@List),
     toolbar: [],
     toolbarRight: ["add"],
     defaultToolbar: ["refresh", "exports", "filter"],
@@ -622,7 +622,6 @@ function handleSuccess() {
             ("PASCAL", spec.pascal.clone()),
             ("NAME", spec.name.clone()),
             ("TABLE_SLOTS", table_slots(spec)),
-            ("BARREL_IMPORTS", barrel_imports(spec)),
             ("COMPOSABLE_IMPORTS", composable_imports(spec)),
             ("SEARCH_FIELDS", search_fields(spec)),
             ("TABLE_COLUMNS", table_columns(spec)),
@@ -639,7 +638,7 @@ fn form_data_decls(spec: &PagesSpec) -> String {
         let init = match &field.kind {
             FieldKind::String => "\"\"".to_owned(),
             FieldKind::Bool => "false".to_owned(),
-            FieldKind::Enum(values) => values.default_num().to_string(),
+            FieldKind::Enum(values) => format!("'{}'", values.default),
             FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Float64 => "0".to_owned(),
         };
         out.push_str(&format!("  {camel}: {init},\n"));
@@ -657,7 +656,7 @@ fn form_reset_decls(spec: &PagesSpec) -> String {
         let init = match &field.kind {
             FieldKind::String => " \"\"".to_owned(),
             FieldKind::Bool => " false".to_owned(),
-            FieldKind::Enum(values) => format!(" {}", values.default_num()),
+            FieldKind::Enum(values) => format!(" '{}'", values.default),
             FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Float64 => " 0".to_owned(),
         };
         out.push_str(&format!("  formData.{camel} ={init};\n"));
@@ -992,7 +991,7 @@ fn open_fill(spec: &PagesSpec) -> String {
         let fallback = match &field.kind {
             FieldKind::String => " ?? \"\"".to_owned(),
             FieldKind::Bool => " ?? false".to_owned(),
-            FieldKind::Enum(values) => format!(" ?? {}", values.default_num()),
+            FieldKind::Enum(values) => format!(" ?? '{}'", values.default),
             FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Float64 => " ?? 0".to_owned(),
         };
         out.push_str(&format!("    formData.{camel} = row.{camel}{fallback};\n"));
@@ -1040,7 +1039,7 @@ mod tests {
         );
         assert!(file.contains("export const stateOptions = ["));
         assert!(
-            file.contains("export function stateToColor(value?: number)"),
+            file.contains("export function stateToColor(value?: string)"),
             "枚举缺省 ON（非 0 值）也生成渲染助手"
         );
         assert!(file.contains("path: `admin/v1/widgets${listQueryString(params)}`"));
@@ -1058,7 +1057,10 @@ mod tests {
             "枚举列 slot：{index}"
         );
         assert!(index.contains("stateToColor(scope.row.state)"));
-        assert!(index.contains("createPagedExportAction(fetchWidgetList)"));
+        assert!(
+            !index.contains("createPagedExportAction"),
+            "导出走 ProPage 的 defaultToolbar exports + listAction 聚合，无 barrel 导入"
+        );
 
         let drawer = drawer_vue(&spec());
         assert!(drawer.contains("ProModal"));
@@ -1069,9 +1071,9 @@ mod tests {
             drawer.contains("code: [{ required: true, message: $t(\"common.validation.required\")"),
             "code_field 必填规则：{drawer}"
         );
-        // 缺省值取枚举的 default 数值（ON=1 而非 0）
-        assert!(drawer.contains("state: 1,"));
-        assert!(drawer.contains("formData.state = row.state ?? 1;"));
+        // 缺省值取枚举的 default 名字文本（protojson 线上形状）
+        assert!(drawer.contains("state: 'ON',"));
+        assert!(drawer.contains("formData.state = row.state ?? 'ON';"));
     }
 
     #[test]

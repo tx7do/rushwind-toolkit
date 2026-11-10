@@ -309,7 +309,7 @@ fn pages_without_fields_read_the_entity_spec() {
     let hooks =
         fs::read_to_string(root.join("frontend/admin/react/src/api/hooks/widget.ts")).unwrap();
     assert!(hooks.contains("export interface Widget {"), "{hooks}");
-    assert!(hooks.contains("state?: number;"), "枚举字段继承自规格");
+    assert!(hooks.contains("state?: string;"), "枚举字段继承自规格");
     assert!(
         hooks.contains("path: `admin/v1/widgets"),
         "路由前缀继承自规格"
