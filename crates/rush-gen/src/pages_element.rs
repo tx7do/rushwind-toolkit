@@ -341,7 +341,7 @@ export function useUpdate@@PASCAL@@(
   options?: UseMutationOptions<
     {},
     Error,
-    { id: number; values: Record<string, any> }
+    { id: string; values: Record<string, any> }
   >
 ) {
   return useMutation({
@@ -360,7 +360,7 @@ export function useUpdate@@PASCAL@@(
 }
 
 export function useDelete@@PASCAL@@(
-  options?: UseMutationOptions<{}, Error, { ids: number[] }>
+  options?: UseMutationOptions<{}, Error, { ids: string[] }>
 ) {
   return useMutation({
     mutationFn: (input) =>
@@ -585,7 +585,7 @@ const pageConfig = computed<ProPageConfig>(() => ({
       return { items: result.items || [], total: Number(result.total ?? 0) };
     },
     deleteAction: async (ids: string) => {
-      await delete@@PASCAL@@({ ids: ids.split(",").map((item) => Number(item)) });
+      await delete@@PASCAL@@({ ids: ids.split(",") });
     },
     toolbar: [],
     toolbarRight: ["add"],
@@ -640,6 +640,8 @@ fn form_data_decls(spec: &PagesSpec) -> String {
             FieldKind::Bool => "false".to_owned(),
             FieldKind::Enum(values) => format!("'{}'", values.default),
             FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Float64 => "0".to_owned(),
+            // 64 位整数线上是字符串，表单按文本处理。
+            FieldKind::Int64 | FieldKind::Uint64 => "\"\"".to_owned(),
         };
         out.push_str(&format!("  {camel}: {init},\n"));
     }
@@ -658,6 +660,7 @@ fn form_reset_decls(spec: &PagesSpec) -> String {
             FieldKind::Bool => " false".to_owned(),
             FieldKind::Enum(values) => format!(" '{}'", values.default),
             FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Float64 => " 0".to_owned(),
+            FieldKind::Int64 | FieldKind::Uint64 => " \"\"".to_owned(),
         };
         out.push_str(&format!("  formData.{camel} ={init};\n"));
     }
@@ -717,7 +720,7 @@ fn form_items(spec: &PagesSpec) -> String {
 "#,
                 &[("CAMEL", camel.clone())],
             ),
-            FieldKind::String => render(
+            FieldKind::String | FieldKind::Int64 | FieldKind::Uint64 => render(
                 r#"        <ElInput
           v-model="formData.@@CAMEL@@"
           :placeholder="$t('common.placeholder.input')"
@@ -866,7 +869,7 @@ const { mutateAsync: update@@PASCAL@@ } = useUpdate@@PASCAL@@();
 const visible = ref(false);
 const submitLoading = ref(false);
 const isCreate = ref(true);
-const currentId = ref<number>();
+const currentId = ref<string>();
 const formRef = ref();
 
 // 表单数据
@@ -993,6 +996,7 @@ fn open_fill(spec: &PagesSpec) -> String {
             FieldKind::Bool => " ?? false".to_owned(),
             FieldKind::Enum(values) => format!(" ?? '{}'", values.default),
             FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Float64 => " ?? 0".to_owned(),
+            FieldKind::Int64 | FieldKind::Uint64 => " ?? \"\"".to_owned(),
         };
         out.push_str(&format!("    formData.{camel} = row.{camel}{fallback};\n"));
     }
@@ -1049,9 +1053,7 @@ mod tests {
     fn index_and_drawer_carry_the_propage_marks() {
         let index = index_vue(&spec());
         assert!(index.contains("ProPage ref=\"pageRef\""));
-        assert!(
-            index.contains("deleteWidget({ ids: ids.split(\",\").map((item) => Number(item)) })")
-        );
+        assert!(index.contains("deleteWidget({ ids: ids.split(\",\") })"));
         assert!(
             index.contains("<template #state=\"scope: any\">"),
             "枚举列 slot：{index}"

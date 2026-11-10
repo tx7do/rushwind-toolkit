@@ -176,6 +176,9 @@ fn ts_type(kind: &FieldKind) -> &'static str {
     match kind {
         FieldKind::String => "string",
         FieldKind::Int32 | FieldKind::Uint32 => "number",
+        // 64 位整数 proto3 JSON 下是字符串（对齐 pbjson serde），64 位
+        // 字段的表单控件也按文本处理。
+        FieldKind::Int64 | FieldKind::Uint64 => "string",
         FieldKind::Enum(_) => "string",
         FieldKind::Bool => "boolean",
         FieldKind::Float64 => "number",
@@ -414,9 +417,10 @@ fn generate_react(opts: &PagesOptions, spec: &PagesSpec) -> Result<PagesReport> 
 
 pub(crate) fn ts_interface(spec: &PagesSpec) -> String {
     let mut out = String::new();
-    out.push_str("  id?: number;\n");
+    // id/tenantId 是 uint64（proto3 JSON 字符串）；sort_order 仍 uint32 数字。
+    out.push_str("  id?: string;\n");
     if !spec.global_like() {
-        out.push_str("  tenantId?: number;\n");
+        out.push_str("  tenantId?: string;\n");
     }
     for field in &spec.fields {
         out.push_str(&format!(
@@ -515,7 +519,7 @@ export function useUpdate{pascal}(
   options?: UseMutationOptions<
     {{}},
     Error,
-    {{ id: number; values: Partial<{pascal}> }}
+    {{ id: string; values: Partial<{pascal}> }}
   >,
 ) {{
   return useMutation({{
@@ -534,7 +538,7 @@ export function useUpdate{pascal}(
 }}
 
 export function useDelete{pascal}(
-  options?: UseMutationOptions<{{}}, Error, {{ ids: number[] }}>,
+  options?: UseMutationOptions<{{}}, Error, {{ ids: string[] }}>,
 ) {{
   return useMutation({{
     mutationFn: (input) =>
@@ -697,7 +701,7 @@ fn drawer_controls(spec: &PagesSpec) -> String {
                     "      <ProFormDigit\n        name=\"{camel}\"\n        label={{t('{label}')}}\n        {required_rule}\n        fieldProps={{{{ precision: 0 }}}}\n      />\n\n"
                 ));
             }
-            FieldKind::String => {
+            FieldKind::String | FieldKind::Int64 | FieldKind::Uint64 => {
                 out.push_str(&format!(
                     "      <ProFormText\n        name=\"{camel}\"\n        label={{t('{label}')}}\n        placeholder={{t('{label}Placeholder')}}\n        {required_rule}\n        fieldProps={{{{ allowClear: true }}}}\n      />\n\n"
                 ));

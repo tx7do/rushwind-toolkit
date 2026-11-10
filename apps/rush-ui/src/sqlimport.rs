@@ -90,9 +90,18 @@ pub fn sql_type_to_kind(raw_type: &str) -> Option<String> {
                 "i32"
             }
         }
-        // rush-gen 无 64 位整型：bigint 折叠到 i32/u32（proto 面同限制）。
-        "bigint" | "int8" | "bigserial" | "numeric" | "decimal" | "float" | "double"
-        | "double precision" | "real" | "money" | "float4" | "float8" => "f64",
+        // 64 位整型走真 kind（rush-gen 的 i64/u64：落库 i64、proto
+        // int64/uint64、TS string）；numeric/money 等非整型仍折叠 f64。
+        "bigint" | "int8" => {
+            if unsigned {
+                "u64"
+            } else {
+                "i64"
+            }
+        }
+        "bigserial" => "u64",
+        "numeric" | "decimal" | "float" | "double" | "double precision" | "real" | "money"
+        | "float4" | "float8" => "f64",
         "bool" | "boolean" | "bit" => "bool",
         _ => return None,
     };

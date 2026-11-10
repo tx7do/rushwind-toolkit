@@ -30,6 +30,12 @@ pub enum FieldKind {
     Int32,
     /// proto `uint32`，实体可空 `Option<u32>`。
     Uint32,
+    /// proto `int64`，实体可空 `Option<i64>`（PG 无符号，64 位一律
+    /// 有符号落库——signed-only doctrine）。
+    Int64,
+    /// proto `uint64`，实体可空 `Option<i64>`（线上 u64、落库 i64，
+    /// 消息边界互相 cast——ID 64 位波后的 house 契约形态）。
+    Uint64,
     /// proto `bool`，实体可空 `Option<bool>`。
     Bool,
     /// proto `double`，实体可空 `Option<f64>`。
@@ -74,6 +80,8 @@ impl FieldKind {
             "string" => return Some(Self::String),
             "i32" | "int" => return Some(Self::Int32),
             "u32" | "uint" => return Some(Self::Uint32),
+            "i64" | "bigint" => return Some(Self::Int64),
+            "u64" | "bigserial" => return Some(Self::Uint64),
             "bool" => return Some(Self::Bool),
             "f64" | "float" => return Some(Self::Float64),
             _ => {}
@@ -120,6 +128,8 @@ impl FieldKind {
             Self::String => "string".to_owned(),
             Self::Int32 => "int32".to_owned(),
             Self::Uint32 => "uint32".to_owned(),
+            Self::Int64 => "int64".to_owned(),
+            Self::Uint64 => "uint64".to_owned(),
             Self::Bool => "bool".to_owned(),
             Self::Float64 => "double".to_owned(),
             Self::Enum(_) => pascal_of(field_name),
@@ -131,6 +141,9 @@ impl FieldKind {
             Self::String | Self::Enum(_) => "String",
             Self::Int32 => "i32",
             Self::Uint32 => "u32",
+            // 64 位一律有符号落库（PG 无无符号整型）：u64 的线上/落库
+            // 差在消息边界 cast。
+            Self::Int64 | Self::Uint64 => "i64",
             Self::Bool => "bool",
             Self::Float64 => "f64",
         }
@@ -143,6 +156,8 @@ impl FieldKind {
             Self::String => "string".to_owned(),
             Self::Int32 => "i32".to_owned(),
             Self::Uint32 => "u32".to_owned(),
+            Self::Int64 => "i64".to_owned(),
+            Self::Uint64 => "u64".to_owned(),
             Self::Bool => "bool".to_owned(),
             Self::Float64 => "f64".to_owned(),
             Self::Enum(values) => {
@@ -1078,7 +1093,7 @@ fn proto_enums(spec: &EntitySpec) -> String {
 fn message_proto(spec: &EntitySpec) -> String {
     let mut fields = String::new();
     fields.push_str(
-        "  optional uint32 id = 1 [\n    json_name = \"id\",\n    (gnostic.openapi.v3.property) = {description: \"ID\"}\n  ]; // ID\n\n",
+        "  optional uint64 id = 1 [\n    json_name = \"id\",\n    (gnostic.openapi.v3.property) = {description: \"ID\"}\n  ]; // ID\n\n",
     );
     let mut num = 2u32;
     for field in &spec.fields {
@@ -1090,11 +1105,11 @@ fn message_proto(spec: &EntitySpec) -> String {
     // 全局表无租户两列。
     let tail: [(&str, Option<FieldKind>); 9] = [
         ("sort_order", Some(FieldKind::Uint32)),
-        ("tenant_id", Some(FieldKind::Uint32)),
+        ("tenant_id", Some(FieldKind::Uint64)),
         ("tenant_name", Some(FieldKind::String)),
-        ("created_by", Some(FieldKind::Uint32)),
-        ("updated_by", Some(FieldKind::Uint32)),
-        ("deleted_by", Some(FieldKind::Uint32)),
+        ("created_by", Some(FieldKind::Uint64)),
+        ("updated_by", Some(FieldKind::Uint64)),
+        ("deleted_by", Some(FieldKind::Uint64)),
         ("created_at", None),
         ("updated_at", None),
         ("deleted_at", None),
@@ -1163,7 +1178,7 @@ message List{pascal}Response {{
 // 查询{pascal}详情 - 请求
 message Get{pascal}Request {{
   oneof query_by {{
-    uint32 id = 1;
+    uint64 id = 1;
 {code_arm}  }}
 
   optional google.protobuf.FieldMask view_mask = 100 [
@@ -1181,7 +1196,7 @@ message Create{pascal}Request {{
 
 // 更新{pascal} - 请求
 message Update{pascal}Request {{
-  uint32 id = 1;
+  uint64 id = 1;
 
   {pascal} data = 2;
 
@@ -1200,7 +1215,7 @@ message Update{pascal}Request {{
 
 // 批量删除{pascal} - 请求
 message Delete{pascal}Request {{
-  repeated uint32 ids = 1;  // 要删除的ID列表
+  repeated uint64 ids = 1;  // 要删除的ID列表
 }}
 
 message Count{pascal}Response {{
@@ -1324,7 +1339,7 @@ fn entity_file(spec: &EntitySpec) -> String {
     let tenant_line = if spec.global {
         ""
     } else {
-        "    pub tenant_id: Option<u32>,\n"
+        "    pub tenant_id: Option<i64>,\n"
     };
     format!(
         r#"//! {table} — 由 rush gen entity 生成的实体模块。
@@ -1335,12 +1350,12 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "{table}")]
 pub struct Model {{
     #[sea_orm(primary_key)]
-    pub id: u32,
+    pub id: i64,
 {tenant_line}{business}    #[sea_orm(default_value = 0)]
     pub sort_order: Option<u32>,
-    pub created_by: Option<u32>,
-    pub updated_by: Option<u32>,
-    pub deleted_by: Option<u32>,
+    pub created_by: Option<i64>,
+    pub updated_by: Option<i64>,
+    pub deleted_by: Option<i64>,
     pub created_at: Option<chrono::NaiveDateTime>,
     pub updated_at: Option<chrono::NaiveDateTime>,
     pub deleted_at: Option<chrono::NaiveDateTime>,
@@ -1385,7 +1400,7 @@ repo_shell!({shell_arm} {pascal}Repo, entity);
 
 impl<'a> {pascal}Repo<'a> {{
     /// Delete = BatchDelete semantics.
-    pub async fn delete_batch(&self, ids: &[u32]) -> Result<(), StatusError> {{
+    pub async fn delete_batch(&self, ids: &[i64]) -> Result<(), StatusError> {{
 {delete_body}    }}
 }}
 "#,
@@ -1443,6 +1458,13 @@ fn mapper_fields(spec: &EntitySpec) -> String {
                     field.name, field.name, field.name
                 ));
             }
+            FieldKind::Uint64 => {
+                // 线上 u64、落库 i64：消息边界转回。
+                out.push_str(&format!(
+                    "        {}: r.{}.map(|v| v as u64),\n",
+                    field.name, field.name
+                ));
+            }
             _ => {
                 out.push_str(&format!("        {}: r.{},\n", field.name, field.name));
             }
@@ -1466,6 +1488,10 @@ fn create_fields(spec: &EntitySpec) -> String {
                 "            {}: Set(Some({}_to_text(data.{}.unwrap_or(0)))),\n",
                 field.name, field.name, field.name
             )),
+            FieldKind::Uint64 => out.push_str(&format!(
+                "            {}: Set(data.{}.map(|v| v as i64)),\n",
+                field.name, field.name
+            )),
             _ => out.push_str(&format!(
                 "            {}: Set(data.{}),\n",
                 field.name, field.name
@@ -1486,6 +1512,10 @@ fn update_fields(spec: &EntitySpec) -> String {
             FieldKind::Enum(_) => format!(
                 "            if let Some(v) = data.{} {{\n                a.{} = Set(Some({}_to_text(v)));\n            }}\n",
                 field.name, field.name, field.name
+            ),
+            FieldKind::Uint64 => format!(
+                "            if let Some(v) = data.{} {{\n                a.{} = Set(Some(v as i64));\n            }}\n",
+                field.name, field.name
             ),
             _ => format!(
                 "            if let Some(v) = data.{} {{\n                a.{} = Set(Some(v));\n            }}\n",
@@ -1523,7 +1553,7 @@ fn service_file(spec: &EntitySpec) -> String {
     let tenant_row = if spec.global {
         ""
     } else {
-        "        tenant_id: r.tenant_id,\n"
+        "        tenant_id: r.tenant_id.map(|v| v as u64),\n"
     };
     let list_ctx = if spec.global {
         "        let _ = ctx;\n"
@@ -1561,7 +1591,7 @@ fn service_file(spec: &EntitySpec) -> String {
         format!(
             r#"        let tenant = tenant_of(&ctx);
         let id = match req.query_by {{
-            Some(proto::proto::{pkg_mod}::get_{name}_request::QueryBy::Id(id)) => id,
+            Some(proto::proto::{pkg_mod}::get_{name}_request::QueryBy::Id(id)) => id as i64,
             Some(proto::proto::{pkg_mod}::get_{name}_request::QueryBy::Code(code)) => {{
                 // Code 臂：租户内唯一编码换 id（dict_type 同款）。
                 {table}::Entity::find()
@@ -1595,7 +1625,7 @@ fn service_file(spec: &EntitySpec) -> String {
         format!(
             r#"        let _ = ctx;
         let id = match req.query_by {{
-            Some(proto::proto::{pkg_mod}::get_{name}_request::QueryBy::Id(id)) => id,
+            Some(proto::proto::{pkg_mod}::get_{name}_request::QueryBy::Id(id)) => id as i64,
             None => return Err(status_error("BAD_REQUEST", "query_by required")),
         }};
         let row = {table}::Entity::find_by_id(id)
@@ -1633,11 +1663,11 @@ use proto::proto::pagination::PagingRequest;
 
 {helpers}fn {name}_proto(r: {table}::Model) -> {pascal} {{
     {pascal} {{
-        id: Some(r.id),
+        id: Some(r.id as u64),
 {tenant_row}{mapper}        sort_order: r.sort_order,
-        created_by: r.created_by,
-        updated_by: r.updated_by,
-        deleted_by: r.deleted_by,
+        created_by: r.created_by.map(|v| v as u64),
+        updated_by: r.updated_by.map(|v| v as u64),
+        deleted_by: r.deleted_by.map(|v| v as u64),
         created_at: r.created_at.and_then(crate::state::naive_to_ts),
         updated_at: r.updated_at.and_then(crate::state::naive_to_ts),
         deleted_at: r.deleted_at.and_then(crate::state::naive_to_ts),
@@ -1696,7 +1726,7 @@ impl proto::gen::services::{pascal}ServiceHandlers for {pascal}Service {{
         req: Update{pascal}Request,
     ) -> Result<Empty, StatusError> {{
         let payload = operator_of(&ctx)?;
-        let row = {table}::Entity::find_by_id(req.id)
+        let row = {table}::Entity::find_by_id(req.id as i64)
 {update_filter}            .one(&self.state.db)
             .await
             .map_err(db_err)?
@@ -1717,7 +1747,7 @@ impl proto::gen::services::{pascal}ServiceHandlers for {pascal}Service {{
     ) -> Result<Empty, StatusError> {{
 {delete_ctx}        let _ = ctx;
         let repo = {pascal}Repo::new(&self.state.db{viewer_arg});
-        repo.delete_batch(&req.ids).await?;
+        repo.delete_batch(&req.ids.iter().map(|id| *id as i64).collect::<Vec<_>>()).await?;
         Ok(Empty {{}})
     }}
 }}
@@ -1887,7 +1917,14 @@ mod tests {
             "code 列带 unique 标注：{entity}"
         );
         assert!(entity.contains("pub quantity: Option<u32>,"));
-        assert!(entity.contains("pub tenant_id: Option<u32>,"));
+        assert!(entity.contains("pub tenant_id: Option<i64>,"));
+        // ID 64 位波后的契约形态：PK/审计 i64、线上 uint64、sort_order 留 u32。
+        assert!(entity.contains("pub id: i64,"));
+        assert!(entity.contains("pub created_by: Option<i64>,"));
+        assert!(entity.contains("pub sort_order: Option<u32>,"));
+        assert!(svc.contains("find_by_id(req.id as i64)"));
+        assert!(svc.contains("delete_batch(&req.ids.iter().map(|id| *id as i64)"));
+        assert!(svc.contains("id: Some(r.id as u64)"));
         assert_eq!(
             entity.matches("#[sea_orm(unique)]").count(),
             1,
@@ -1897,6 +1934,23 @@ mod tests {
         let msg = message_proto(&spec);
         assert!(msg.contains("optional string code = 2 ["));
         assert!(msg.contains("optional uint32 quantity = 3 ["));
+    }
+
+    #[test]
+    fn sixty_four_bit_kinds_parse_and_roundtrip() {
+        assert_eq!(
+            FieldKind::parse("u64").unwrap().spec_string(),
+            "u64",
+            "u64 往返恒等"
+        );
+        assert_eq!(FieldKind::parse("i64").unwrap().spec_string(), "i64");
+        assert_eq!(FieldKind::parse("bigint").unwrap().spec_string(), "i64");
+        assert_eq!(FieldKind::parse("bigserial").unwrap().spec_string(), "u64");
+        assert_eq!(FieldKind::proto_ty(&FieldKind::Uint64, "x"), "uint64");
+        assert_eq!(FieldKind::proto_ty(&FieldKind::Int64, "x"), "int64");
+        // 落库一律 i64（signed-only doctrine），线上才分 uint64/int64。
+        assert_eq!(FieldKind::Uint64.entity_ty(), "i64");
+        assert_eq!(FieldKind::Int64.entity_ty(), "i64");
     }
 
     #[test]

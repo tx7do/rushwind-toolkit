@@ -433,7 +433,7 @@ export function useUpdate@@PASCAL@@(
   options?: UseMutationOptions<
     {},
     Error,
-    { id: number; values: Record<string, any> }
+    { id: string; values: Record<string, any> }
   >,
 ) {
   return useMutation({
@@ -452,7 +452,7 @@ export function useUpdate@@PASCAL@@(
 }
 
 export function useDelete@@PASCAL@@(
-  options?: UseMutationOptions<{}, Error, { ids: number[] }>,
+  options?: UseMutationOptions<{}, Error, { ids: string[] }>,
 ) {
   return useMutation({
     mutationFn: (input) =>
@@ -842,7 +842,7 @@ fn drawer_form_schema(spec: &PagesSpec) -> String {
                     ("RULES", rules.to_owned()),
                 ],
             ),
-            FieldKind::String => render(
+            FieldKind::String | FieldKind::Int64 | FieldKind::Uint64 => render(
                 r#"    {
       component: 'Input',
       fieldName: '@@CAMEL@@',
