@@ -182,6 +182,8 @@ fn ts_type(kind: &FieldKind) -> &'static str {
         FieldKind::Enum(_) => "string",
         FieldKind::Bool => "boolean",
         FieldKind::Float64 => "number",
+        // Timestamp 的 proto3 JSON 形状是 RFC3339 字符串（pbjson serde）。
+        FieldKind::Timestamp | FieldKind::TimestampTz => "string",
     }
 }
 
@@ -607,6 +609,18 @@ fn list_columns(spec: &PagesSpec) -> String {
         let label_key = &field.name;
         let searchable = matches!(field.kind, FieldKind::String);
         match &field.kind {
+            FieldKind::Timestamp | FieldKind::TimestampTz => {
+                // 时间列：显示（dateTime）+ 区间搜索（dateTimeRange）双列
+                // 共用 dataIndex——house api-audit-log 的习语；transform
+                // 产出的 key 已带 `__gte/__lte` 算子后缀，PaginationQuery
+                // 的 makeQueryString 认得（不再追加 __contains）。
+                out.push_str(&format!(
+                    "    {{\n      title: t('{label_key}'),\n      dataIndex: '{camel}',\n      width: 170,\n      valueType: 'dateTime',\n      hideInSearch: true,\n    }},\n    {{\n      title: t('{label_key}'),\n      dataIndex: '{camel}',\n      valueType: 'dateTimeRange',\n      hideInTable: true,\n      search: {{\n        transform: (values?: Array<string | Dayjs>) => {{\n          const fmt = (v?: string | Dayjs) =>\n            typeof v === 'string' ? v : v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : undefined;\n          return {{\n            {snake}__gte: fmt(values?.[0]),\n            {snake}__lte: fmt(values?.[1]),\n          }};\n        }},\n      }},\n      fieldProps: {{\n        showTime: true,\n        presets: [\n          {{\n            label: t('common:dateRange.today'),\n            value: [dayjs().startOf('day'), dayjs().endOf('day')],\n          }},\n          {{\n            label: t('common:dateRange.yesterday'),\n            value: [\n              dayjs().subtract(1, 'day').startOf('day'),\n              dayjs().subtract(1, 'day').endOf('day'),\n            ],\n          }},\n          {{\n            label: t('common:dateRange.thisWeek'),\n            value: [dayjs().startOf('week'), dayjs().endOf('week')],\n          }},\n          {{\n            label: t('common:dateRange.lastWeek'),\n            value: [\n              dayjs().subtract(1, 'week').startOf('week'),\n              dayjs().subtract(1, 'week').endOf('week'),\n            ],\n          }},\n          {{\n            label: t('common:dateRange.thisMonth'),\n            value: [dayjs().startOf('month'), dayjs().endOf('month')],\n          }},\n          {{\n            label: t('common:dateRange.lastMonth'),\n            value: [\n              dayjs().subtract(1, 'month').startOf('month'),\n              dayjs().subtract(1, 'month').endOf('month'),\n            ],\n          }},\n        ],\n      }},\n    }},\n",
+                    camel = camel,
+                    label_key = label_key,
+                    snake = field.name,
+                ));
+            }
             FieldKind::Bool => {
                 out.push_str(&format!(
                     "    {{\n      title: t('{label_key}'),\n      dataIndex: '{camel}',\n      width: 95,\n      valueType: 'select',\n      fieldProps: {{ options: {camel}Options(t) }},\n      render: (_, record) => (\n        <Tag color={{ {camel}Color(record.{camel}) }}>{{ {camel}Label(t, record.{camel}) }}</Tag>\n      ),\n    }},\n"
@@ -630,7 +644,7 @@ fn list_columns(spec: &PagesSpec) -> String {
         }
     }
     out.push_str(
-        "    {\n      title: t('sortOrder'),\n      dataIndex: 'sortOrder',\n      width: 95,\n      hideInSearch: true,\n    },\n    {\n      title: t('action'),\n      valueType: 'option',\n      width: 90,\n      render: (_, record) => [\n        <a\n          key=\"edit\"\n          onClick={() => {\n            setEditing(record);\n            setDrawerMode('edit');\n            setDrawerOpen(true);\n          }}\n        >\n          <EditOutlined />\n        </a>,\n        <Popconfirm\n          key=\"delete\"\n          title={t('deleteConfirmTitle')}\n          description={t('deleteConfirmDesc', { moduleName: t('moduleName') })}\n          onConfirm={() => record.id && deleteMutation.mutate({ ids: [record.id] })}\n          okText={t('common:button.ok')}\n          cancelText={t('common:button.cancel')}\n        >\n          <a style={{ color: 'var(--ant-color-error)' }}><DeleteOutlined /></a>\n        </Popconfirm>,\n      ],\n    },\n",
+        "    {\n      title: t('sortOrder'),\n      dataIndex: 'sortOrder',\n      width: 95,\n      hideInSearch: true,\n    },\n    {\n      title: t('createdAt'),\n      dataIndex: 'createdAt',\n      width: 180,\n      valueType: 'dateTime',\n      hideInSearch: true,\n      sorter: true,\n    },\n    {\n      title: t('action'),\n      valueType: 'option',\n      width: 90,\n      render: (_, record) => [\n        <a\n          key=\"edit\"\n          onClick={() => {\n            setEditing(record);\n            setDrawerMode('edit');\n            setDrawerOpen(true);\n          }}\n        >\n          <EditOutlined />\n        </a>,\n        <Popconfirm\n          key=\"delete\"\n          title={t('deleteConfirmTitle')}\n          description={t('deleteConfirmDesc', { moduleName: t('moduleName') })}\n          onConfirm={() => record.id && deleteMutation.mutate({ ids: [record.id] })}\n          okText={t('common:button.ok')}\n          cancelText={t('common:button.cancel')}\n        >\n          <a style={{ color: 'var(--ant-color-error)' }}><DeleteOutlined /></a>\n        </Popconfirm>,\n      ],\n    },\n",
     );
     out
 }
@@ -643,11 +657,13 @@ fn drawer_components(spec: &PagesSpec) -> String {
     let mut has_text = false;
     let mut has_radio = false;
     let mut has_select = false;
+    let mut has_date = false;
     for field in &spec.fields {
         match &field.kind {
             FieldKind::String => has_text = true,
             FieldKind::Bool => has_radio = true,
             FieldKind::Enum(_) => has_select = true,
+            FieldKind::Timestamp | FieldKind::TimestampTz => has_date = true,
             _ => {}
         }
     }
@@ -659,6 +675,9 @@ fn drawer_components(spec: &PagesSpec) -> String {
     }
     if has_text {
         parts.push("  ProFormText,".to_owned());
+    }
+    if has_date {
+        parts.push("  ProFormDatePicker,".to_owned());
     }
     let mut out = parts.join("\n");
     out.push('\n');
@@ -701,6 +720,16 @@ fn drawer_controls(spec: &PagesSpec) -> String {
                     "      <ProFormDigit\n        name=\"{camel}\"\n        label={{t('{label}')}}\n        {required_rule}\n        fieldProps={{{{ precision: 0 }}}}\n      />\n\n"
                 ));
             }
+            FieldKind::Timestamp | FieldKind::TimestampTz => {
+                // house AccessKeyDrawer 的 expiresAt 习语：showTime + 全宽；
+                // 初值直接吃线上的 RFC3339 串，提交 Dayjs 序列化回 RFC3339。
+                out.push_str(&format!(
+                    "      <ProFormDatePicker\n        name=\"{camel}\"\n        label={{t('{label}')}}\n        {required_rule}\n        fieldProps={{{{ showTime: true, style: {{ width: '100%' }} }}}}\n      />\n\n",
+                    camel = camel,
+                    label = label,
+                    required_rule = required_rule,
+                ));
+            }
             FieldKind::String | FieldKind::Int64 | FieldKind::Uint64 => {
                 out.push_str(&format!(
                     "      <ProFormText\n        name=\"{camel}\"\n        label={{t('{label}')}}\n        placeholder={{t('{label}Placeholder')}}\n        {required_rule}\n        fieldProps={{{{ allowClear: true }}}}\n      />\n\n"
@@ -717,13 +746,30 @@ fn drawer_controls(spec: &PagesSpec) -> String {
 // ---- 页面模板 ----
 
 fn list_file(spec: &PagesSpec) -> String {
+    // dayjs 仅在存在时间字段时导入——house tsconfig 的 noUnusedLocals
+    // 不会放过未用导入。
+    let dayjs_import = if spec.fields.iter().any(|field| field.kind.is_timestamp()) {
+        "import dayjs, { type Dayjs } from 'dayjs';\n"
+    } else {
+        ""
+    };
+    // Tag 只被枚举/布尔列的 Tag 渲染用到；无此类字段的页面按需裁剪。
+    let antd_import = if spec
+        .fields
+        .iter()
+        .any(|field| matches!(field.kind, FieldKind::Bool | FieldKind::Enum(_)))
+    {
+        "import { Button, Popconfirm, Tag, App } from 'antd';"
+    } else {
+        "import { Button, Popconfirm, App } from 'antd';"
+    };
     format!(
         r#"import {{ useRef, useState }} from 'react';
 import type {{ ProColumns, ActionType }} from '@ant-design/pro-components';
 import {{ ProTable }} from '@ant-design/pro-components';
-import {{ Button, Popconfirm, Tag, App }} from 'antd';
+{antd_import}
 import {{ EditOutlined, DeleteOutlined, PlusOutlined }} from '@ant-design/icons';
-import {{ useQueryClient }} from '@tanstack/react-query';
+{dayjs_import}import {{ useQueryClient }} from '@tanstack/react-query';
 import {{ useTranslation }} from 'react-i18next';
 
 import {{ PaginationQuery }} from '@/core/transport/rest';
@@ -774,7 +820,7 @@ const {pascal}List: React.FC = () => {{
           actionRef={{actionRef}}
           columns={{columns}}
           headerTitle={{false}}
-          request={{async (params) => {{
+          request={{async (params, sorter, _filter) => {{
             try {{
               const query = new PaginationQuery({{
                 paging: {{
@@ -788,6 +834,12 @@ const {pascal}List: React.FC = () => {{
                     ),
                   ),
                 }},
+                orderBy:
+                  sorter && Object.keys(sorter).length > 0
+                    ? Object.entries(sorter).map(([key, value]) =>
+                        value === 'ascend' ? key : `-${{key}}`,
+                      )
+                    : undefined,
               }});
 
               const response = await fetch{pascal}List(query);
@@ -862,6 +914,8 @@ export default {pascal}List;
         pascal = spec.pascal,
         name = spec.name,
         plural = spec.plural,
+        dayjs_import = dayjs_import,
+        antd_import = antd_import,
         columns = list_columns(spec),
         constants_imports = constants_imports(spec),
     )
@@ -1176,6 +1230,14 @@ fn locale_file(spec: &PagesSpec, zh: bool) -> String {
         "sortOrder".into(),
         if zh { "排序号" } else { "Sort Order" }.into(),
     );
+    map.insert(
+        "createdAt".into(),
+        if zh { "创建时间" } else { "Created At" }.into(),
+    );
+    map.insert(
+        "updatedAt".into(),
+        if zh { "更新时间" } else { "Updated At" }.into(),
+    );
     for key in [
         "deleteSuccess",
         "createSuccess",
@@ -1315,6 +1377,50 @@ mod tests {
             global: false,
             loaded_spec: None,
         }
+    }
+
+    /// 带时间字段的规格（区间搜索/日期控件的形状断言用）。
+    fn timestamp_spec() -> PagesSpec {
+        PagesSpec {
+            fields: vec![FieldSpec {
+                name: "expires_at".to_owned(),
+                kind: FieldKind::Timestamp,
+            }],
+            code_field: None,
+            ..spec()
+        }
+    }
+
+    #[test]
+    fn timestamp_fields_get_the_house_date_faces() {
+        let hooks = hooks_file(&timestamp_spec());
+        assert!(
+            hooks.contains("expiresAt?: string;"),
+            "Timestamp 线上是 RFC3339 字符串"
+        );
+
+        let list = list_file(&timestamp_spec());
+        assert!(list.contains("import dayjs, { type Dayjs } from 'dayjs';"));
+        // 显示列 + 区间搜索列共用 dataIndex；transform 产出带算子后缀的 key。
+        assert!(list.contains("valueType: 'dateTime',"));
+        assert!(list.contains("valueType: 'dateTimeRange',"));
+        assert!(list.contains("expires_at__gte: fmt(values?.[0]),"));
+        assert!(list.contains("expires_at__lte: fmt(values?.[1]),"));
+        // 尾段 createdAt 展示列（house language 页习语，带排序）。
+        assert!(list.contains("      dataIndex: 'createdAt',\n      width: 180,"));
+        // 排序参数骑 orderBy（house language 页的 request 习语）。
+        assert!(list.contains("async (params, sorter, _filter) => {"));
+        assert!(list.contains("value === 'ascend' ? key : `-${key}`,"));
+        // 无时间字段的页面不引 dayjs。
+        assert!(!list_file(&spec()).contains("import dayjs"));
+
+        let drawer = drawer_file(&timestamp_spec());
+        assert!(drawer.contains("ProFormDatePicker"));
+        assert!(drawer.contains("fieldProps={{ showTime: true, style: { width: '100%' } }}"));
+
+        let zh: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&locale_file(&timestamp_spec(), true)).unwrap();
+        assert!(zh.contains_key("createdAt") && zh.contains_key("updatedAt"));
     }
 
     #[test]

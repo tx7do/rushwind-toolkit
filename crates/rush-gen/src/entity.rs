@@ -40,6 +40,17 @@ pub enum FieldKind {
     Bool,
     /// proto `double`，实体可空 `Option<f64>`。
     Float64,
+    /// proto `google.protobuf.Timestamp`，实体可空
+    /// `Option<chrono::NaiveDateTime>`——house 实体时间列的形态
+    /// （identity 的 start_at/end_at、message 的 read_at 同款）；线上
+    /// proto3 JSON 下是 RFC3339 字符串（pbjson serde，与标准尾段
+    /// created_at 的线上形状一致）。落库 `timestamp`（无时区）。
+    Timestamp,
+    /// proto 同为 `google.protobuf.Timestamp`，实体可空
+    /// `Option<chrono::DateTime<chrono::FixedOffset>>`——timestamptz
+    /// 列的风味（seaorm-support time.rs 的 datetime_to_ts/ts_to_datetime
+    /// 面正是为它准备的）。线上形状与 Timestamp 无差别，落库才分。
+    TimestampTz,
     /// 文本列枚举（仓内模式，见 data.rs "Enum columns carry the enum
     /// names as text"：proto enum → prost 按 i32 匹配 → 文本列）。
     Enum(EnumValues),
@@ -84,6 +95,10 @@ impl FieldKind {
             "u64" | "bigserial" => return Some(Self::Uint64),
             "bool" => return Some(Self::Bool),
             "f64" | "float" => return Some(Self::Float64),
+            // 两种落库风味：无时区 timestamp（house 实体形态）与
+            // timestamptz（DateTime<FixedOffset>），线上同形、落库分家。
+            "timestamp" | "datetime" => return Some(Self::Timestamp),
+            "timestamptz" => return Some(Self::TimestampTz),
             _ => {}
         }
         let rest = kind.strip_prefix("enum(")?;
@@ -132,6 +147,7 @@ impl FieldKind {
             Self::Uint64 => "uint64".to_owned(),
             Self::Bool => "bool".to_owned(),
             Self::Float64 => "double".to_owned(),
+            Self::Timestamp | Self::TimestampTz => "google.protobuf.Timestamp".to_owned(),
             Self::Enum(_) => pascal_of(field_name),
         }
     }
@@ -146,7 +162,14 @@ impl FieldKind {
             Self::Int64 | Self::Uint64 => "i64",
             Self::Bool => "bool",
             Self::Float64 => "f64",
+            Self::Timestamp => "chrono::NaiveDateTime",
+            Self::TimestampTz => "chrono::DateTime<chrono::FixedOffset>",
         }
+    }
+
+    /// 两种时间风味共用同一套 wire 形状与前端控件（只在落库类型上分家）。
+    pub fn is_timestamp(&self) -> bool {
+        matches!(self, Self::Timestamp | Self::TimestampTz)
     }
 
     /// 规格串：`FieldKind::parse` 的合法输入，往返恒等（@default 与
@@ -160,6 +183,8 @@ impl FieldKind {
             Self::Uint64 => "u64".to_owned(),
             Self::Bool => "bool".to_owned(),
             Self::Float64 => "f64".to_owned(),
+            Self::Timestamp => "timestamp".to_owned(),
+            Self::TimestampTz => "timestamptz".to_owned(),
             Self::Enum(values) => {
                 let mut out = String::from("enum(");
                 for (index, (num, text)) in values.values.iter().enumerate() {
@@ -245,6 +270,7 @@ pub struct EntityReport {
 }
 
 /// 派生好的命名全集。
+#[derive(Clone)]
 struct EntitySpec {
     name: String,
     pascal: String,
@@ -515,7 +541,7 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
         ),
         (
             root.join("backend/services/admin-api/src/migration.rs"),
-            format!("            .table::<data::{}::Entity>()", spec.table),
+            format!("let {}_tables", spec.name),
             String::new(),
         ),
         (
@@ -633,10 +659,13 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
         mod_key,
     )?;
 
-    // migration.rs：EntityTables 链尾（.build() 前）插入
+    // migration.rs：独立 EntityTables 迁移——house 惯例（新表面不进 init
+    // 链）：全新库 init 先建既有表、本迁移随后建新表；已有库 init 不重放，
+    // 本迁移由 seaorm-migrator 追踪并在下次启动应用。
     let migration_rs = &edits[1];
+    let mig_spec = spec.clone();
     apply_contains_edit(&mut report, &migration_rs.0, &migration_rs.1, |text| {
-        insert_before_line(text, ".build();", &migration_rs.1)
+        insert_independent_migration(text, &mig_spec)
     })?;
 
     // repos/mod.rs：mod 行 + pub use 行
@@ -759,9 +788,10 @@ pub fn generate_entity(opts: &EntityOptions) -> Result<EntityReport> {
         }
     }
 
-    report.notes.push(
-        "已有数据的库：init 迁移（m20250915_000001_init）不会重放，新表需手工建表或在 migration.rs 追加独立迁移条目".to_owned(),
-    );
+    report.notes.push(format!(
+        "建表迁移 m…_{name} 已追加进 migrations vec：全新库随 init 依序建表；已有库（init 不重放）下次启动由 migrator 追踪应用，无需手工建表",
+        name = spec.name
+    ));
     report.notes.push(
         "三套前端页面未生成：React 面用 rush gen pages（菜单种子随其一并写入 seed.rs）".to_owned(),
     );
@@ -941,21 +971,158 @@ fn insert_sorted(
 }
 
 /// 在第一个含 `needle` 的行之前插入 `line`（保持该行原有缩进推断交给调用方）。
-fn insert_before_line(text: &str, needle: &str, line: &str) -> Option<String> {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let at = lines.iter().position(|l| l.contains(needle))?;
-    let mut out: Vec<&str> = Vec::with_capacity(lines.len() + 1);
-    out.extend_from_slice(&lines[..at]);
-    out.push(line);
-    out.extend_from_slice(&lines[at..]);
-    Some(out.join("\n"))
+/// 今天，`YYYYMMDD`（UTC 日历日——迁移名只是命名惯例，与 seaorm 的
+/// 应用顺序无关）。不引 chrono：civil-from-days 换算，十来行。
+fn today_yyyymmdd() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}{m:02}{d:02}")
 }
 
-/// mount_services! 表的字母序插入。多行表项的首行是孤立的 `(`，其
-/// mount 标识在下一行——提取时向右看一行，插入时落在 `(` 行之前。
+/// `Migrations::migrations()` 的 migrations vec 尾部追加一个独立
+/// EntityTables 迁移（house 惯例：新表面不进 init 链）。let 块落在
+/// `vec![` 前、`Box::new` 项落在 vec 闭括号前；迁移名带日期戳，序号
+/// 扫描同日迁移取最大值 +1。整文件过一遍 rustfmt——插入行必须与
+/// 仓内 fmt 门一致。
+fn insert_independent_migration(text: &str, spec: &EntitySpec) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let vec_at = lines.iter().position(|l| l.trim() == "vec![")?;
+    // 后端风味照抄文件里已在用的 DatabaseBackend。
+    let backend = lines
+        .iter()
+        .find_map(|l| l.split("DatabaseBackend::").nth(1))
+        .map(|rest| {
+            rest.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect::<String>()
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Postgres".to_owned());
+    let today = today_yyyymmdd();
+    let mut seq = 0u32;
+    let stamp = format!("m{today}_");
+    for line in &lines {
+        if let Some(at) = line.find(&stamp) {
+            if let Ok(n) = line[at + stamp.len()..at + stamp.len() + 6].parse::<u32>() {
+                seq = seq.max(n);
+            }
+        }
+    }
+    let mig_name = format!("m{today}_{:06}_{}", seq + 1, spec.name);
+
+    let let_block = format!(
+        "        let {name}_tables = EntityTables::new(\"{mig_name}\", DatabaseBackend::{backend})\n            .table::<data::{table}::Entity>()\n            .build();\n",
+        name = spec.name,
+        mig_name = mig_name,
+        backend = backend,
+        table = spec.table,
+    );
+    let box_line = format!("            Box::new({}_tables),", spec.name);
+
+    // let 块插在 `vec![` 前；Box::new 项插在 vec 的闭括号前。
+    let close_at = vec_at + 1 + lines[vec_at + 1..].iter().position(|l| l.trim() == "]")?;
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len() + 5);
+    out.extend_from_slice(&lines[..vec_at]);
+    for let_line in let_block.trim_end_matches('\n').split('\n') {
+        out.push(let_line);
+    }
+    for (idx, line) in lines[vec_at..].iter().enumerate() {
+        if idx + vec_at == close_at {
+            out.push(&box_line);
+        }
+        out.push(line);
+    }
+    let joined = out.join("\n");
+    Some(format_rust_source(&joined))
+}
+
+/// mount 表的字母序插入，双形状并存：
+/// - 现行 house 形状（rest.rs 的 `fn mount_items` → `vec![]`，表项
+///   `mount_service!(state, mount_x_service, XService),`；长名走
+///   rustfmt 的逐参折行形态——house 的 InternalMessageRecipient 条目
+///   同款）；挂载 fn 本体由 gen-http 的 mounts 模块按契约自动生成，
+///   生成器只登记表项。
+/// - 旧 `mount_services!` 表（多行表项的首行是孤立的 `(`，其 mount
+///   标识在下一行——提取时向右看一行）。
 fn insert_mount_entry(text: &str, name: &str, pascal: &str) -> Option<String> {
     let lines: Vec<&str> = text.split('\n').collect();
-    let new_entry = format!("        (mount_{name}_service, {pascal}Service),");
+    let target = format!("mount_{name}_service");
+    let single = format!("        mount_service!(state, mount_{name}_service, {pascal}Service),");
+    let multi = format!(
+        "        mount_service!(\n            state,\n            mount_{name}_service,\n            {pascal}Service\n        ),"
+    );
+    let new_entry = if single.chars().count() <= 100 {
+        single
+    } else {
+        multi
+    };
+
+    // 现行形状：fn mount_items 内的 vec 表。
+    if let Some(items_at) = lines
+        .iter()
+        .position(|line| line.contains("fn mount_items"))
+        .and_then(|fn_at| {
+            lines[fn_at..]
+                .iter()
+                .position(|line| line.trim() == "vec![")
+                .map(|off| fn_at + off)
+        })
+    {
+        let close = items_at
+            + 1
+            + lines[items_at + 1..]
+                .iter()
+                .position(|line| line.trim() == "]")?;
+        let mut insert_at = close;
+        let mut cursor = items_at + 1;
+        while cursor < close {
+            let mut skip = 0usize;
+            let mut key = extract_mount_id(lines[cursor]);
+            if key.is_none() {
+                // 逐参折行的表项（长服务名）：mount 标识在表项内第
+                // 2~4 行——命中后跳过该表项的已扫行。
+                for look in 1..=4usize {
+                    if cursor + look >= close {
+                        break;
+                    }
+                    if let Some(k) = extract_mount_id(lines[cursor + look]) {
+                        key = Some(k);
+                        skip = look;
+                        break;
+                    }
+                }
+            }
+            if let Some(key) = key {
+                if key.as_str() > target.as_str() {
+                    insert_at = cursor;
+                    break;
+                }
+                cursor += skip;
+            }
+            cursor += 1;
+        }
+        let mut out: Vec<&str> = Vec::with_capacity(lines.len() + 1);
+        out.extend_from_slice(&lines[..insert_at]);
+        out.push(new_entry.trim_end_matches('\n'));
+        out.extend_from_slice(&lines[insert_at..]);
+        return Some(out.join("\n"));
+    }
+
+    // 旧形状：mount_services! 宏表。
+    let old_entry = format!("        (mount_{name}_service, {pascal}Service),");
     let start = lines
         .iter()
         .position(|line| line.contains("mount_services!"))?;
@@ -985,19 +1152,28 @@ fn insert_mount_entry(text: &str, name: &str, pascal: &str) -> Option<String> {
     let insert_at = insert_at.unwrap_or(end);
     let mut out: Vec<&str> = Vec::with_capacity(lines.len() + 1);
     out.extend_from_slice(&lines[..insert_at]);
-    out.push(&new_entry);
+    out.push(&old_entry);
     out.extend_from_slice(&lines[insert_at..]);
     Some(out.join("\n"))
 }
 
 fn extract_mount_id(line: &str) -> Option<String> {
-    let byte = line.find("mount_")?;
-    let rest = &line[byte..];
-    let id: String = rest
-        .chars()
-        .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
-        .collect();
-    (id.ends_with("_service")).then_some(id)
+    // 行内可能有多个 mount_ 起始：`mount_service!(state, mount_x_service,
+    // …)` 的第一个命中是宏名本身——跳过它继续向右找真正的挂载标识。
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find("mount_") {
+        let byte = from + rel;
+        let rest = &line[byte..];
+        let id: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+            .collect();
+        if id.ends_with("_service") && id != "mount_service" {
+            return Some(id);
+        }
+        from = byte + "mount_".len();
+    }
+    None
 }
 
 /// `use crate::services::{…}` 导入块的字母序插入。rustfmt 折行后一行
@@ -1373,16 +1549,18 @@ impl ActiveModelBehavior for ActiveModel {{}}
 }
 
 fn repo_file(spec: &EntitySpec) -> String {
-    let (shell_arm, viewer_import, delete_body) = if spec.global {
+    // 导入面与自包含 repo_shell! 对齐（宏展开自带
+    // DatabaseConnection/Viewer/Condition 的全路径，外层再引就是
+    // unused——house 的 macro-repo 形状只留 EntityTrait/QueryFilter/
+    // ColumnTrait 三件）。
+    let (shell_arm, delete_body) = if spec.global {
         (
             "global",
-            "",
             "        let delete =\n            entity::Entity::delete_many()\n                .filter(entity::Column::Id.is_in(ids.to_vec()));\n        delete.exec(self.db).await.map_err(db_err)?;\n        Ok(())\n",
         )
     } else {
         (
             "tenant",
-            "use crate::data::Viewer;\n",
             "        let mut delete = entity::Entity::delete_many()\n            .filter(entity::Column::Id.is_in(ids.to_vec()));\n        if let Some(tid) = self.viewer.tenant_scope() {\n            delete = delete.filter(entity::Column::TenantId.eq(tid));\n        }\n        delete.exec(self.db).await.map_err(db_err)?;\n        Ok(())\n",
         )
     };
@@ -1390,11 +1568,10 @@ fn repo_file(spec: &EntitySpec) -> String {
         r#"//! {pascal}Repo — queries with
 //! all predicates owned here (never ad-hoc in services).
 
-use sea_orm::sea_query::Condition;
-use sea_orm::{{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter}};
+use sea_orm::{{ColumnTrait, EntityTrait, QueryFilter}};
 
 use crate::data::{table} as entity;
-{viewer_import}use crate::state::{{db_err, StatusError}};
+use crate::state::{{db_err, StatusError}};
 
 repo_shell!({shell_arm} {pascal}Repo, entity);
 
@@ -1407,7 +1584,6 @@ impl<'a> {pascal}Repo<'a> {{
         pascal = spec.pascal,
         table = spec.table,
         shell_arm = shell_arm,
-        viewer_import = viewer_import,
         delete_body = delete_body,
     )
 }
@@ -1465,6 +1641,21 @@ fn mapper_fields(spec: &EntitySpec) -> String {
                     field.name, field.name
                 ));
             }
+            FieldKind::Timestamp | FieldKind::TimestampTz => {
+                // 实体时间 → wire Timestamp。走框架全路径（不依赖各下游
+                // state.rs 的再导出面——timestamptz 的 datetime_to_ts/
+                // ts_to_datetime 目前没有任何仓再导出）；标准尾段三列
+                // 仍走 crate::state 的既有习语。
+                let convert = if field.kind == FieldKind::Timestamp {
+                    "naive_to_ts"
+                } else {
+                    "datetime_to_ts"
+                };
+                out.push_str(&format!(
+                    "        {}: r.{}.and_then(rushwind_storage_seaorm_support::time::{convert}),\n",
+                    field.name, field.name
+                ));
+            }
             _ => {
                 out.push_str(&format!("        {}: r.{},\n", field.name, field.name));
             }
@@ -1492,6 +1683,16 @@ fn create_fields(spec: &EntitySpec) -> String {
                 "            {}: Set(data.{}.map(|v| v as i64)),\n",
                 field.name, field.name
             )),
+            FieldKind::Timestamp | FieldKind::TimestampTz => out.push_str(&format!(
+                "            {}: Set(data.{}.as_ref().and_then(rushwind_storage_seaorm_support::time::{})),\n",
+                field.name,
+                field.name,
+                if field.kind == FieldKind::Timestamp {
+                    "ts_to_naive"
+                } else {
+                    "ts_to_datetime"
+                }
+            )),
             _ => out.push_str(&format!(
                 "            {}: Set(data.{}),\n",
                 field.name, field.name
@@ -1517,6 +1718,17 @@ fn update_fields(spec: &EntitySpec) -> String {
                 "            if let Some(v) = data.{} {{\n                a.{} = Set(Some(v as i64));\n            }}\n",
                 field.name, field.name
             ),
+            FieldKind::Timestamp | FieldKind::TimestampTz => {
+                let convert = if field.kind == FieldKind::Timestamp {
+                    "ts_to_naive"
+                } else {
+                    "ts_to_datetime"
+                };
+                format!(
+                    "            if let Some(v) = data.{} {{\n                a.{} = Set(rushwind_storage_seaorm_support::time::{convert}(&v));\n            }}\n",
+                    field.name, field.name
+                )
+            }
             _ => format!(
                 "            if let Some(v) = data.{} {{\n                a.{} = Set(Some(v));\n            }}\n",
                 field.name, field.name
@@ -1951,6 +2163,100 @@ mod tests {
         // 落库一律 i64（signed-only doctrine），线上才分 uint64/int64。
         assert_eq!(FieldKind::Uint64.entity_ty(), "i64");
         assert_eq!(FieldKind::Int64.entity_ty(), "i64");
+    }
+
+    #[test]
+    fn timestamp_kind_rides_the_house_wire_shapes() {
+        // parse：主串 + 常用别名，往返恒等（spec_string 是主串）。
+        assert_eq!(
+            FieldKind::parse("timestamp").unwrap().spec_string(),
+            "timestamp"
+        );
+        assert_eq!(
+            FieldKind::parse("datetime").unwrap().spec_string(),
+            "timestamp"
+        );
+
+        // wire：proto google.protobuf.Timestamp；落库 chrono NaiveDateTime
+        // （house 实体时间列形态——identity 的 start_at/end_at 同款）。
+        assert_eq!(
+            FieldKind::proto_ty(&FieldKind::Timestamp, "expires_at"),
+            "google.protobuf.Timestamp"
+        );
+        assert_eq!(FieldKind::Timestamp.entity_ty(), "chrono::NaiveDateTime");
+
+        let spec = EntitySpec {
+            name: "widget".to_owned(),
+            pascal: "Widget".to_owned(),
+            table: "sys_widgets".to_owned(),
+            package: "widget.service.v1".to_owned(),
+            pkg_mod: "widget::service::v1".to_owned(),
+            proto_dir: "widget/service/v1".to_owned(),
+            route_prefix: "/admin/v1/widgets".to_owned(),
+            fields: vec![FieldSpec {
+                name: "expires_at".to_owned(),
+                kind: FieldKind::Timestamp,
+            }],
+            code_field: None,
+            global: false,
+        };
+
+        let entity = entity_file(&spec);
+        assert!(
+            entity.contains("pub expires_at: Option<chrono::NaiveDateTime>,"),
+            "实体时间列形态与 house 一致：{entity}"
+        );
+
+        let msg = message_proto(&spec);
+        assert!(
+            msg.contains("optional google.protobuf.Timestamp expires_at = 2 ["),
+            "消息面时间字段：{msg}"
+        );
+
+        let svc = service_file(&spec);
+        // 出向：NaiveDateTime → Timestamp（框架全路径，不依赖下游 state
+        // 的再导出面；尾段三列仍走 crate::state 习语）。
+        assert!(svc.contains(
+            "expires_at: r.expires_at.and_then(rushwind_storage_seaorm_support::time::naive_to_ts),"
+        ));
+        // 入向：wire Timestamp → NaiveDateTime（create/update 边界）。
+        assert!(svc.contains(
+            "expires_at: Set(data.expires_at.as_ref().and_then(rushwind_storage_seaorm_support::time::ts_to_naive)),"
+        ));
+        assert!(svc.contains(
+            "a.expires_at = Set(rushwind_storage_seaorm_support::time::ts_to_naive(&v));"
+        ));
+
+        // timestamptz 风味：落库 DateTime<FixedOffset>，转换对换成
+        // datetime_to_ts/ts_to_datetime，线上形状与 Timestamp 无差别。
+        let tz_spec = EntitySpec {
+            fields: vec![FieldSpec {
+                name: "published_at".to_owned(),
+                kind: FieldKind::TimestampTz,
+            }],
+            ..spec.clone()
+        };
+        assert_eq!(
+            FieldKind::parse("timestamptz").unwrap().spec_string(),
+            "timestamptz"
+        );
+        assert_eq!(
+            FieldKind::TimestampTz.entity_ty(),
+            "chrono::DateTime<chrono::FixedOffset>"
+        );
+        let tz_entity = entity_file(&tz_spec);
+        assert!(
+            tz_entity.contains("pub published_at: Option<chrono::DateTime<chrono::FixedOffset>>,")
+        );
+        let tz_svc = service_file(&tz_spec);
+        assert!(tz_svc.contains(
+            "published_at: r.published_at.and_then(rushwind_storage_seaorm_support::time::datetime_to_ts),"
+        ));
+        assert!(tz_svc.contains(
+            "published_at: Set(data.published_at.as_ref().and_then(rushwind_storage_seaorm_support::time::ts_to_datetime)),"
+        ));
+        let tz_msg = message_proto(&tz_spec);
+        assert!(tz_msg.contains("optional google.protobuf.Timestamp published_at = 2 ["));
     }
 
     #[test]

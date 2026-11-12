@@ -77,9 +77,11 @@ pub fn sql_type_to_kind(raw_type: &str) -> Option<String> {
         "binary" | "varbinary" | "blob" | "tinyblob" | "mediumblob" | "longblob" | "bytea" => {
             "string"
         }
-        "date" | "datetime" | "timestamp" | "timestamptz" | "time" | "interval" | "year" => {
-            "string"
-        }
+        // 时间列有真 kind 了：datetime/timestamp → timestamp（无时区
+        // 风味）、timestamptz → timestamptz；date/time 等独立语义无
+        // 对应 kind，拒译进 skipped（不静默折 string）。
+        "datetime" | "timestamp" => "timestamp",
+        "timestamptz" => "timestamptz",
         "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "int2" | "int4" | "serial" => {
             if base == "tinyint" && lowered.starts_with("tinyint(1)") && !unsigned {
                 // MySQL 布尔的惯例形态。
@@ -499,6 +501,31 @@ CREATE TABLE IF NOT EXISTS `sys_dict_type` (
                 ("state", "i32"),
                 ("remark", "string"),
             ]
+        );
+    }
+
+    #[test]
+    fn time_columns_get_real_kinds_or_reject() {
+        let sql = "CREATE TABLE t_events ( \
+            starts_at datetime NOT NULL, \
+            fired_at timestamp NULL, \
+            synced_at timestamptz NULL, \
+            birthday date NOT NULL, \
+            took interval NULL);";
+        let tables = parse_ddl(sql);
+        let kinds: Vec<(&str, &str)> = tables[0]
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.kind.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("starts_at", "timestamp"),
+                ("fired_at", "timestamp"),
+                ("synced_at", "timestamptz"),
+            ],
+            "datetime/timestamp/timestamptz 走真 kind；date/interval 拒译不进 fields"
         );
     }
 

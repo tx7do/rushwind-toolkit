@@ -244,22 +244,25 @@ pub fn run_doctor(repo: Option<&Path>) -> DoctorReport {
             return report;
         }
         let has = |rel: &str| repo.join(rel).is_file();
+        // seed 面两种形状并存：单文件 seed.rs（旧快照）与 seed/ 目录
+        // （menu_data.rs 拆分后的现行形态）。
+        let seed_face = has("backend/services/admin-api/src/seed.rs")
+            || repo.join("backend/services/admin-api/src/seed").is_dir();
         report.push(
             "仓·后端锚点",
             if has("backend/services/admin-api/src/data.rs")
                 && has("backend/services/admin-api/src/server/rest.rs")
-                && has("backend/services/admin-api/src/seed.rs")
+                && seed_face
             {
                 Status::Ok
             } else {
                 Status::Fail
             },
-            "data.rs / rest.rs / seed.rs".to_owned(),
+            "data.rs / rest.rs / seed（文件或目录）".to_owned(),
             None,
         );
         for (name, rel) in [
             ("仓·react", "frontend/admin/react/package.json"),
-            ("仓·vben", "frontend/admin/vue-vben/apps/admin/package.json"),
             ("仓·element", "frontend/admin/vue-element/package.json"),
         ] {
             report.push(
@@ -267,6 +270,46 @@ pub fn run_doctor(repo: Option<&Path>) -> DoctorReport {
                 if has(rel) { Status::Ok } else { Status::Warn },
                 rel.to_owned(),
                 None,
+            );
+        }
+        // vben 双形态：上游 monorepo 的 apps/admin 在位，或快照布局
+        // （应用源码摊在 monorepo 根、apps/admin 只剩 node_modules 占位）。
+        let vben_upstream = has("frontend/admin/vue-vben/apps/admin/package.json");
+        let vben_snapshot = has("frontend/admin/vue-vben/package.json")
+            && repo.join("frontend/admin/vue-vben/src").is_dir();
+        report.push(
+            "仓·vben",
+            if vben_upstream || vben_snapshot {
+                Status::Ok
+            } else {
+                Status::Warn
+            },
+            if vben_snapshot && !vben_upstream {
+                "快照布局（应用源码在 monorepo 根）".to_owned()
+            } else {
+                "frontend/admin/vue-vben".to_owned()
+            },
+            None,
+        );
+        // 三栈 node_modules 在位性：tsc / vue-tsc 验证门的前置。
+        for (name, rel) in [
+            ("仓·react 依赖", "frontend/admin/react/node_modules"),
+            ("仓·element 依赖", "frontend/admin/vue-element/node_modules"),
+            ("仓·vben 依赖", "frontend/admin/vue-vben/node_modules"),
+        ] {
+            let installed = repo.join(rel).is_dir();
+            report.push(
+                name,
+                if installed { Status::Ok } else { Status::Warn },
+                if installed {
+                    "已安装".to_owned()
+                } else {
+                    "node_modules 缺失".to_owned()
+                },
+                (!installed).then(|| {
+                    "pnpm install（tsc / vue-tsc 验证门的前置；rush-ui 探针会 symlink 主仓的）"
+                        .to_owned()
+                }),
             );
         }
         let spec_dir = repo.join(".rush");

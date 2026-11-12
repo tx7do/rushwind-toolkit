@@ -58,6 +58,52 @@ fn remove_line_containing(text: &str, marker: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
+/// 摘掉 rest.rs 挂载表里的一个 `mount_service!` 表项——单行形态删一
+/// 行；逐参折行形态（长服务名）从 `mount_service!(` 起到 `),` 止整段
+/// 摘。找不到返回 None（调用方回退旧形状）。
+fn remove_mount_item(text: &str, name: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mount_id = format!("mount_{name}_service");
+    let mut at = None;
+    let mut span_end = None;
+    for (idx, line) in lines.iter().enumerate() {
+        if line.contains(&mount_id) && line.contains("mount_service!(") {
+            at = Some(idx);
+            span_end = Some(idx);
+            break;
+        }
+        if line.trim_end() == "mount_service!(" {
+            let next = lines.get(idx + 1..idx + 4)?;
+            if next.iter().any(|l| l.contains(&mount_id)) {
+                at = Some(idx);
+                span_end = Some(idx + 4);
+                break;
+            }
+        }
+    }
+    let (at, span_end) = (at?, span_end?);
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len() - (span_end + 1 - at));
+    out.extend_from_slice(&lines[..at]);
+    out.extend_from_slice(&lines[span_end + 1..]);
+    Some(out.join("\n"))
+}
+
+/// 删除从首个含 `start_marker` 的行到其后的首个含 `end_marker` 的行
+/// （含两端）——独立迁移的 let 块按这个 span 摘（rustfmt 的折行形态
+/// 不影响 span 的两个锚）。
+fn remove_block(text: &str, start_marker: &str, end_marker: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let start = lines.iter().position(|line| line.contains(start_marker))?;
+    let end = lines[start..]
+        .iter()
+        .position(|line| line.contains(end_marker))?
+        + start;
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len() - (end + 1 - start));
+    out.extend_from_slice(&lines[..start]);
+    out.extend_from_slice(&lines[end + 1..]);
+    Some(out.join("\n"))
+}
+
 /// 从 `use crate::services::{` 块内摘掉一个导入名（行级或行内拼词还原）。
 fn remove_use_token(text: &str, token: &str) -> Option<String> {
     let lines: Vec<&str> = text.split('\n').collect();
@@ -308,8 +354,22 @@ pub fn undo_entity(opts: &UndoOptions) -> Result<UndoReport> {
     edit_file(
         &mut ctx,
         &src.join("migration.rs"),
-        |text| remove_line_containing(text, &format!(".table::<data::{table}::Entity>()")),
-        "migration 表项",
+        |text| {
+            // 独立迁移形态（gen entity 追加的建表迁移）：let 块与
+            // vec 里的 Box::new 项成对摘除；旧 init 链形态回退到
+            // .table 行。
+            match remove_block(text, &format!("let {}_tables", opts.name), ".build();") {
+                Some(block_free) => Some(
+                    remove_line_containing(
+                        &block_free,
+                        &format!("Box::new({}_tables),", opts.name),
+                    )
+                    .unwrap_or(block_free),
+                ),
+                None => remove_line_containing(text, &format!(".table::<data::{table}::Entity>()")),
+            }
+        },
+        "migration 迁移条目",
     );
     edit_file(
         &mut ctx,
@@ -335,7 +395,11 @@ pub fn undo_entity(opts: &UndoOptions) -> Result<UndoReport> {
         &mut ctx,
         &rest_rs,
         |text| {
-            let text = remove_line_containing(text, &format!("(mount_{}_service,", opts.name))?;
+            // 现行形状（mount_items 的 vec 表项，单行或逐参折行）与旧
+            // mount_services! 表并存还原。
+            let text = remove_mount_item(text, &opts.name).or_else(|| {
+                remove_line_containing(text, &format!("(mount_{}_service,", opts.name))
+            })?;
             remove_use_token(&text, &format!("{pascal}Service"))
         },
         "rest 挂载/导入",
@@ -407,7 +471,16 @@ pub fn undo_entity(opts: &UndoOptions) -> Result<UndoReport> {
     }
 
     // ---- vben 页面 ----
-    let vben = root.join("frontend/admin/vue-vben/apps/admin");
+    // app 根双形态与 gen pages 的解析一致（8f07ab8a）：上游 monorepo 的
+    // apps/admin 在位用之；快照布局（应用源码摊在 monorepo 根）用根。
+    let vben_root = root.join("frontend/admin/vue-vben");
+    let vben = if vben_root.join("apps/admin/package.json").is_file() {
+        vben_root.join("apps/admin")
+    } else if vben_root.join("package.json").is_file() {
+        vben_root.clone()
+    } else {
+        vben_root.join("apps/admin")
+    };
     if vben.join("package.json").is_file() {
         remove_file(
             &mut ctx,

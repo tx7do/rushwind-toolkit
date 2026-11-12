@@ -263,9 +263,17 @@ leaning Tauri) reuses `rush-gen` directly without going through the CLI.
 - [x] `rush testbed`: differential-rig orchestration
       (build/start/replay/teardown, container discipline: no docker) +
       offline JSONL report summaries
-- [ ] Frontend page generation: page scaffolds for the Vben / Element /
-      React stacks (prefer integrating with the existing frontend
-      generation chain rather than rewriting it in Rust)
+- [x] Frontend page generation: page scaffolds for the React / Vben /
+      Element stacks (`--stack` to switch; template baseline is each
+      stack's in-repo dict/language page chain; React menus ride the
+      backend seed while Vben / Element take static route modules —
+      verified with vue-tsc / tsc against the real target repos)
+- [x] Entity lifecycle: `--regen` (spec-driven overwrite with a dry-run
+      line diff) + `rush gen undo` (reverse removal of every artifact)
+      + `rush doctor` (toolchain and repo-shape health check)
+- [x] `rush db pull`: introspect a deployed database into `.rush` specs
+      (PG / SQLite; lossy types are rejected into a visible skipped
+      list rather than silently degraded)
 
 ## Related repositories
 

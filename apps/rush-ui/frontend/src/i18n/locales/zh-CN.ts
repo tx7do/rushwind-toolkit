@@ -242,7 +242,6 @@ export default {
       groupPlaceholder: '如 system，留空按实体归类',
       overwrite: '覆盖既有页面（--regen）',
       generateSuccess: '已生成 {count} 个文件',
-      notImplemented: '{framework} 代码生成器尚未实现，预览将显示占位内容',
     },
     // 实体选择
     service: {
@@ -280,7 +279,6 @@ export default {
     },
     // 占位
     placeholder: {
-      notImplemented: '代码生成器尚未实现',
       service: '服务',
       description: '描述',
       fields: '字段数',

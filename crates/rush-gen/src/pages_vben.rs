@@ -486,10 +486,30 @@ fn rest_import(_spec: &PagesSpec) -> String {
 
 // ---- 列表页模板（index.vue，基准：language/index.vue） ----
 
-/// 搜索 schema：仅 string 字段进搜索（数值/布尔/枚举留给列渲染）。
+/// 搜索 schema：string 字段 + 时间区间（RangePicker）；数值/布尔/枚举
+/// 留给列渲染。
 fn search_schema(spec: &PagesSpec) -> String {
     let mut out = String::new();
     for field in &spec.fields {
+        if field.kind.is_timestamp() {
+            // house api-audit-log 搜索区的 RangePicker 习语；index 的
+            // query 回调里拆成 `__gte/__lte`。
+            let camel = camel_of(&field.name);
+            out.push_str(&render(
+                r#"    {
+      component: 'RangePicker',
+      fieldName: '@@CAMEL@@',
+      label: $t('page.@@NAME@@.@@CAMEL@@'),
+      componentProps: {
+        showTime: true,
+        allowClear: true,
+      },
+    },
+"#,
+                &[("CAMEL", camel), ("NAME", spec.name.clone())],
+            ));
+            continue;
+        }
         if field.kind != FieldKind::String {
             continue;
         }
@@ -518,16 +538,24 @@ fn grid_columns(spec: &PagesSpec) -> String {
         let camel = camel_of(&field.name);
         let slot = matches!(field.kind, FieldKind::Bool | FieldKind::Enum(_))
             .then(|| format!("      slots: {{ default: '{camel}' }},\n"));
+        // 时间列走 vxe-grid 的 formatDateTime 内建 formatter（house 日志
+        // 页的 createdAt 列同款）。
+        let date_line = if field.kind.is_timestamp() {
+            "      formatter: 'formatDateTime',\n"
+        } else {
+            ""
+        };
         out.push_str(&render(
             r#"    {
       title: $t('page.@@NAME@@.@@CAMEL@@'),
       field: '@@CAMEL@@',
-@@SLOT@@      minWidth: 110,
+@@DATE@@@@SLOT@@      minWidth: 110,
     },
 "#,
             &[
                 ("CAMEL", camel),
                 ("NAME", spec.name.clone()),
+                ("DATE", date_line.to_owned()),
                 ("SLOT", slot.unwrap_or_default()),
             ],
         ));
@@ -621,6 +649,44 @@ fn index_imports(spec: &PagesSpec) -> String {
         .join("\n")
 }
 
+/// index.vue 的 dayjs 导入（搜索区间拆分要用；无时间字段时为空——
+/// 未用导入会挂下游 lint/typecheck）。
+fn dayjs_import(spec: &PagesSpec) -> String {
+    if spec.fields.iter().any(|field| field.kind.is_timestamp()) {
+        "import dayjs from 'dayjs';\n".to_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// query 回调里的时间区间拆分块（每个 Timestamp 字段一段；无时间字段时
+/// 为空）。RangePicker 交付 `[start, end]` 数组，要拆成带算子后缀的
+/// `field__gte/__lte` 才能骑后端 query_parser（PaginationQuery 对已带
+/// 算子后缀的 key 不再追加 __contains）。
+fn range_split(spec: &PagesSpec) -> String {
+    let mut out = String::new();
+    for field in &spec.fields {
+        if !field.kind.is_timestamp() {
+            continue;
+        }
+        let camel = camel_of(&field.name);
+        out.push_str(&render(
+            r#"        if (Array.isArray(formValues.@@CAMEL@@) && formValues.@@CAMEL@@.length === 2) {
+          formValues.@@SNAKE@@__gte = dayjs(formValues.@@CAMEL@@[0]).format(
+            'YYYY-MM-DD HH:mm:ss',
+          );
+          formValues.@@SNAKE@@__lte = dayjs(formValues.@@CAMEL@@[1]).format(
+            'YYYY-MM-DD HH:mm:ss',
+          );
+          delete formValues.@@CAMEL@@;
+        }
+"#,
+            &[("CAMEL", camel), ("SNAKE", field.name.clone())],
+        ));
+    }
+    out
+}
+
 fn index_vue(spec: &PagesSpec) -> String {
     render(
         r#"<script lang="ts" setup>
@@ -633,7 +699,7 @@ import { LucideFilePenLine, LucideTrash2 } from '@vben/icons';
 
 import { notification } from 'ant-design-vue';
 
-import { useVbenVxeGrid } from '#/adapter/vxe-table';
+@@DAYJS_IMPORT@@import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import TableExportButton from '#/components/TableExportButton.vue';
 import {
 @@INDEX_IMPORTS@@
@@ -671,7 +737,7 @@ const gridOptions: VxeGridProps = {
   proxyConfig: {
     ajax: {
       query: async ({ page }, formValues) => {
-        const result = await fetch@@PASCAL@@List(
+@@RANGE_SPLIT@@        const result = await fetch@@PASCAL@@List(
           new PaginationQuery({
             paging: {
               page: page.currentPage,
@@ -777,7 +843,9 @@ async function handleDelete(row: any) {
             ("NAME", spec.name.clone()),
             ("PLURAL", spec.plural.clone()),
             ("INDEX_IMPORTS", index_imports(spec)),
+            ("DAYJS_IMPORT", dayjs_import(spec)),
             ("SEARCH_SCHEMA", search_schema(spec)),
+            ("RANGE_SPLIT", range_split(spec)),
             ("COLUMNS", grid_columns(spec)),
             ("GRID_SLOTS", grid_slots(spec)),
         ],
@@ -835,6 +903,27 @@ fn drawer_form_schema(spec: &PagesSpec) -> String {
       fieldName: '@@CAMEL@@',
       label: $t('page.@@NAME@@.@@CAMEL@@'),
 @@RULES@@    },
+"#,
+                &[
+                    ("CAMEL", camel.clone()),
+                    ("NAME", spec.name.clone()),
+                    ("RULES", rules.to_owned()),
+                ],
+            ),
+            FieldKind::Timestamp | FieldKind::TimestampTz => render(
+                // valueFormat 让 v-model 全程是字符串：线上 RFC3339 直接
+                // 回填（setValues(row) 原样），提交串直接过 pbjson——
+                // 不经过 Dayjs 对象。
+                r#"    {
+      component: 'DatePicker',
+      fieldName: '@@CAMEL@@',
+      label: $t('page.@@NAME@@.@@CAMEL@@'),
+@@RULES@@      componentProps: {
+        class: 'w-full',
+        showTime: true,
+        valueFormat: 'YYYY-MM-DDTHH:mm:ssZ',
+      },
+    },
 "#,
                 &[
                     ("CAMEL", camel.clone()),
@@ -1005,6 +1094,43 @@ function setLoading(loading: boolean) {
 mod tests {
     use super::*;
     use crate::entity::FieldSpec;
+
+    /// 带时间字段的规格（区间搜索/日期控件的形状断言用）。
+    fn timestamp_spec() -> PagesSpec {
+        PagesSpec {
+            fields: vec![FieldSpec {
+                name: "expires_at".to_owned(),
+                kind: FieldKind::Timestamp,
+            }],
+            code_field: None,
+            ..spec()
+        }
+    }
+
+    #[test]
+    fn timestamp_fields_get_the_house_date_faces() {
+        let index = index_vue(&timestamp_spec());
+        assert!(index.contains("import dayjs from 'dayjs';"));
+        assert!(index.contains("component: 'RangePicker',"));
+        assert!(
+            index.contains("formValues.expires_at__gte = dayjs(formValues.expiresAt[0]).format("),
+            "搜索区间拆成带算子后缀的 key"
+        );
+        assert!(
+            !index_vue(&spec()).contains("import dayjs"),
+            "无时间字段不引 dayjs"
+        );
+
+        let drawer = drawer_vue(&timestamp_spec());
+        assert!(
+            drawer.contains("component: 'DatePicker',"),
+            "单值时间字段走 DatePicker"
+        );
+        assert!(drawer.contains("valueFormat: 'YYYY-MM-DDTHH:mm:ssZ',"));
+
+        let composable = composable_file(&timestamp_spec());
+        assert!(composable.contains("expiresAt?: string;"));
+    }
 
     fn spec() -> PagesSpec {
         PagesSpec {

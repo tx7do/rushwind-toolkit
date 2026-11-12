@@ -98,8 +98,12 @@ defineExpose({ toDto, fromDto, addField });
             <a-select-option value="string">string</a-select-option>
             <a-select-option value="i32">i32</a-select-option>
             <a-select-option value="u32">u32</a-select-option>
+            <a-select-option value="i64">i64</a-select-option>
+            <a-select-option value="u64">u64</a-select-option>
             <a-select-option value="bool">bool</a-select-option>
             <a-select-option value="f64">f64</a-select-option>
+            <a-select-option value="timestamp">timestamp</a-select-option>
+            <a-select-option value="timestamptz">timestamptz</a-select-option>
             <a-select-option value="enum">enum(…)</a-select-option>
           </a-select>
         </a-col>

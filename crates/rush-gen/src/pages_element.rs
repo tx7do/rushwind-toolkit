@@ -391,6 +391,27 @@ export function useDelete@@PASCAL@@(
 fn search_fields(spec: &PagesSpec) -> String {
     let mut out = String::new();
     for field in &spec.fields {
+        if field.kind.is_timestamp() {
+            // 时间区间搜索（house api-audit-log 的 date-picker/datetimerange
+            // 习语）；listAction 里拆成 `__gte/__lte`。
+            let camel = camel_of(&field.name);
+            out.push_str(&render(
+                r#"        {
+          type: "date-picker",
+          label: $t("pages.@@NAME@@.@@CAMEL@@"),
+          field: "@@CAMEL@@",
+          attrs: {
+            type: "datetimerange",
+            startPlaceholder: $t("common.placeholder.date"),
+            endPlaceholder: $t("common.placeholder.date"),
+            clearable: true,
+          },
+        },
+"#,
+                &[("CAMEL", camel), ("NAME", spec.name.clone())],
+            ));
+            continue;
+        }
         if field.kind != FieldKind::String {
             continue;
         }
@@ -409,6 +430,59 @@ fn search_fields(spec: &PagesSpec) -> String {
     out
 }
 
+/// index.vue 的 dayjs 导入（时间区间拆分要用；无时间字段时为空——
+/// 未用导入会挂下游 lint/typecheck）。
+fn dayjs_import(spec: &PagesSpec) -> String {
+    if spec.fields.iter().any(|field| field.kind.is_timestamp()) {
+        "import dayjs from \"dayjs\";\n".to_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// listAction 里的时间区间拆分块（每个 Timestamp 字段一段；无时间字段
+/// 时为空）。RangePicker 交付的是 `[start, end]` 数组，要拆成带算子后缀
+/// 的 `field__gte/__lte` 才能骑后端 query_parser（PaginationQuery 对已带
+/// 算子后缀的 key 不再追加 __contains）。
+fn list_action_prep(spec: &PagesSpec) -> String {
+    let mut out = String::new();
+    let timestamps = spec
+        .fields
+        .iter()
+        .filter(|field| field.kind.is_timestamp())
+        .count();
+    if timestamps == 0 {
+        return out;
+    }
+    out.push_str("      const formValues: Record<string, any> = { ...queryParams };\n");
+    for field in &spec.fields {
+        if !field.kind.is_timestamp() {
+            continue;
+        }
+        let camel = camel_of(&field.name);
+        out.push_str(&render(
+            r#"      if (Array.isArray(formValues.@@CAMEL@@) && formValues.@@CAMEL@@.length === 2) {
+        formValues.@@SNAKE@@__gte = dayjs(formValues.@@CAMEL@@[0]).format("YYYY-MM-DD HH:mm:ss");
+        formValues.@@SNAKE@@__lte = dayjs(formValues.@@CAMEL@@[1]).format("YYYY-MM-DD HH:mm:ss");
+        delete formValues.@@CAMEL@@;
+      }
+"#,
+            &[("CAMEL", camel), ("SNAKE", field.name.clone())],
+        ));
+    }
+    out
+}
+
+/// listAction 的 formValues 实参：无时间字段时直传 queryParams，
+/// 有时间字段时传拆分后的局部量。
+fn form_values_expr(spec: &PagesSpec) -> String {
+    if spec.fields.iter().any(|field| field.kind.is_timestamp()) {
+        "formValues".to_owned()
+    } else {
+        "queryParams".to_owned()
+    }
+}
+
 /// 列定义：序号 + 业务字段全列（布尔/枚举走 slot）+ 标准尾列 + 操作列。
 fn table_columns(spec: &PagesSpec) -> String {
     let mut out = String::from(
@@ -423,16 +497,23 @@ fn table_columns(spec: &PagesSpec) -> String {
         } else {
             String::new()
         };
+        // 时间列走 ProPage 的 cellType: "date"（与尾段 createdAt 同款）。
+        let date_line = if field.kind.is_timestamp() {
+            "          cellType: \"date\",\n          dateFormat: \"YYYY-MM-DD HH:mm:ss\",\n"
+        } else {
+            ""
+        };
         out.push_str(&render(
             r#"        {
           prop: "@@CAMEL@@",
           label: $t("pages.@@NAME@@.@@CAMEL@@"),
           minWidth: 110,
-@@SLOT@@        },
+@@DATE@@@@SLOT@@        },
 "#,
             &[
                 ("CAMEL", camel),
                 ("NAME", spec.name.clone()),
+                ("DATE", date_line.to_owned()),
                 ("SLOT", slot_line),
             ],
         ));
@@ -500,7 +581,7 @@ fn table_slots(spec: &PagesSpec) -> String {
 /// index.vue 无 barrel 导入：导出全部由 ProPage 的 defaultToolbar
 /// ["exports"] + listAction 聚合驱动（house 形态），布尔/枚举渲染助手
 /// 在本实体的 composable 文件里，不走 barrel。
-
+///
 /// 本实体 composable 文件的页面级导入（fetch/删除 + 渲染助手）。
 fn composable_imports(spec: &PagesSpec) -> String {
     let mut names: Vec<String> = vec![
@@ -550,7 +631,7 @@ fn index_vue(spec: &PagesSpec) -> String {
 import { computed, ref } from "vue";
 import { ElTag } from "element-plus";
 
-import ProPage from "@/components/Pro/ProPage/index.vue";
+@@DAYJS_IMPORT@@import ProPage from "@/components/Pro/ProPage/index.vue";
 import type { ProPageConfig } from "@/components/Pro/ProPage/types";
 import @@PASCAL@@Drawer from "./@@NAME@@-drawer.vue";
 
@@ -576,10 +657,10 @@ const pageConfig = computed<ProPageConfig>(() => ({
   table: {
     listAction: async (query: any) => {
       const { page, pageSize, ...queryParams } = query;
-      const result = await fetch@@PASCAL@@List(
+@@LIST_ACTION_PREP@@      const result = await fetch@@PASCAL@@List(
         new PaginationQuery({
           paging: { page: page || 1, pageSize: pageSize || 10 },
-          formValues: queryParams,
+          formValues: @@FORM_VALUES_EXPR@@,
         })
       );
       return { items: result.items || [], total: Number(result.total ?? 0) };
@@ -621,9 +702,12 @@ function handleSuccess() {
         &[
             ("PASCAL", spec.pascal.clone()),
             ("NAME", spec.name.clone()),
+            ("DAYJS_IMPORT", dayjs_import(spec)),
             ("TABLE_SLOTS", table_slots(spec)),
             ("COMPOSABLE_IMPORTS", composable_imports(spec)),
             ("SEARCH_FIELDS", search_fields(spec)),
+            ("LIST_ACTION_PREP", list_action_prep(spec)),
+            ("FORM_VALUES_EXPR", form_values_expr(spec)),
             ("TABLE_COLUMNS", table_columns(spec)),
         ],
     )
@@ -642,6 +726,11 @@ fn form_data_decls(spec: &PagesSpec) -> String {
             FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Float64 => "0".to_owned(),
             // 64 位整数线上是字符串，表单按文本处理。
             FieldKind::Int64 | FieldKind::Uint64 => "\"\"".to_owned(),
+            // house task-drawer 的习语：undefined as Date | undefined——
+            // ElDatePicker 拾取后是 Date，提交经 JSON 序列化成 RFC3339 串。
+            FieldKind::Timestamp | FieldKind::TimestampTz => {
+                "undefined as Date | undefined".to_owned()
+            }
         };
         out.push_str(&format!("  {camel}: {init},\n"));
     }
@@ -661,6 +750,7 @@ fn form_reset_decls(spec: &PagesSpec) -> String {
             FieldKind::Enum(values) => format!(" '{}'", values.default),
             FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Float64 => " 0".to_owned(),
             FieldKind::Int64 | FieldKind::Uint64 => " \"\"".to_owned(),
+            FieldKind::Timestamp | FieldKind::TimestampTz => " undefined".to_owned(),
         };
         out.push_str(&format!("  formData.{camel} ={init};\n"));
     }
@@ -717,6 +807,17 @@ fn form_items(spec: &PagesSpec) -> String {
             ),
             FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Float64 => render(
                 r#"        <ElInputNumber v-model="formData.@@CAMEL@@" style="width: 100%" />
+"#,
+                &[("CAMEL", camel.clone())],
+            ),
+            FieldKind::Timestamp | FieldKind::TimestampTz => render(
+                // house task-drawer 的 ElDatePicker 习语（datetime + 全宽）。
+                r#"        <ElDatePicker
+          v-model="formData.@@CAMEL@@"
+          type="datetime"
+          :placeholder="$t('common.placeholder.input')"
+          style="width: 100%"
+        />
 "#,
                 &[("CAMEL", camel.clone())],
             ),
@@ -997,6 +1098,7 @@ fn open_fill(spec: &PagesSpec) -> String {
             FieldKind::Enum(values) => format!(" ?? '{}'", values.default),
             FieldKind::Int32 | FieldKind::Uint32 | FieldKind::Float64 => " ?? 0".to_owned(),
             FieldKind::Int64 | FieldKind::Uint64 => " ?? \"\"".to_owned(),
+            FieldKind::Timestamp | FieldKind::TimestampTz => " ?? undefined".to_owned(),
         };
         out.push_str(&format!("    formData.{camel} = row.{camel}{fallback};\n"));
     }
@@ -1008,6 +1110,46 @@ fn open_fill(spec: &PagesSpec) -> String {
 mod tests {
     use super::*;
     use crate::entity::FieldSpec;
+
+    /// 带时间字段的规格（区间搜索/日期控件的形状断言用）。
+    fn timestamp_spec() -> PagesSpec {
+        PagesSpec {
+            fields: vec![FieldSpec {
+                name: "expires_at".to_owned(),
+                kind: FieldKind::Timestamp,
+            }],
+            code_field: None,
+            ..spec()
+        }
+    }
+
+    #[test]
+    fn timestamp_fields_get_the_house_date_faces() {
+        let index = index_vue(&timestamp_spec());
+        assert!(index.contains("import dayjs from \"dayjs\";"));
+        assert!(index.contains("type: \"date-picker\""));
+        assert!(index.contains("type: \"datetimerange\""));
+        assert!(
+            index.contains("formValues.expires_at__gte = dayjs(formValues.expiresAt[0]).format("),
+            "listAction 拆成带算子后缀的 key"
+        );
+        assert!(index.contains("formValues: formValues,"));
+        assert!(
+            !index_vue(&spec()).contains("import dayjs"),
+            "无时间字段不引 dayjs"
+        );
+
+        let drawer = drawer_vue(&timestamp_spec());
+        assert!(drawer.contains("type=\"datetime\""));
+        assert!(drawer.contains("undefined as Date | undefined"));
+        assert!(drawer.contains("formData.expiresAt = row.expiresAt ?? undefined;"));
+
+        let composable = composable_file(&timestamp_spec());
+        assert!(composable.contains("expiresAt?: string;"));
+
+        let columns = table_columns(&timestamp_spec());
+        assert!(columns.contains("cellType: \"date\""));
+    }
 
     fn spec() -> PagesSpec {
         PagesSpec {

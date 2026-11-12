@@ -219,7 +219,6 @@ export default {
       groupPlaceholder: 'e.g. system; empty groups by entity',
       overwrite: 'Overwrite existing pages (--regen)',
       generateSuccess: 'Generated {count} files',
-      notImplemented: '{framework} code generator is not yet implemented. Preview will show placeholder content',
     },
     service: {
       selectTitle: 'Select Entities ({selected}/{total})',
@@ -252,7 +251,6 @@ export default {
       confirmBtn: 'Confirm & Generate',
     },
     placeholder: {
-      notImplemented: 'Code generator not yet implemented',
       service: 'Service',
       description: 'Description',
       fields: 'Fields',

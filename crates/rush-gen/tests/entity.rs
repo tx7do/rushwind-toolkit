@@ -27,7 +27,7 @@ fn scaffold_admin() -> (TempDir, std::path::PathBuf) {
     .unwrap();
     fs::write(
         src.join("migration.rs"),
-        "fn migrations() {\n    EntityTables::new(\"m1\", backend)\n        .table::<data::sys_configs::Entity>()\n        .build();\n}\n",
+        "fn migrations() {\n    let init = EntityTables::new(\"m1\", DatabaseBackend::Postgres)\n        .table::<data::sys_configs::Entity>()\n        .build();\n    vec![\n        Box::new(init),\n    ]\n}\n",
     )
     .unwrap();
     fs::write(
@@ -136,14 +136,58 @@ fn generates_files_and_edits_all_registration_points() {
         "字节序插入：{data_rs}"
     );
 
-    // migration.rs：链尾插入
+    // migration.rs：独立 EntityTables 迁移追加（let 块 + vec 项），整文件
+    // 过 rustfmt——插入内容与仓内 fmt 门同形态。
     let migration = fs::read_to_string(src.join("migration.rs")).unwrap();
-    assert!(migration.contains(".table::<data::sys_widgets::Entity>()"));
-    let table_pos = migration
-        .find(".table::<data::sys_widgets::Entity>()")
+    assert!(
+        migration.contains(".table::<data::sys_widgets::Entity>()"),
+        "新表的 EntityTables 条目：{migration}"
+    );
+    assert!(migration.contains("Box::new(widget_tables)"), "{migration}");
+    assert!(
+        migration.contains("let widget_tables = EntityTables::new("),
+        "{migration}"
+    );
+    // 迁移名带 mYYYYMMDD_NNNNNN_ 的 house 形状（6 位序号 = 当日首个）。
+    let mig_line = migration
+        .lines()
+        .find(|line| line.contains("let widget_tables"))
         .unwrap();
-    let build_pos = migration.find(".build();").unwrap();
-    assert!(table_pos < build_pos);
+    let mig_name = mig_line
+        .split("EntityTables::new(\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap();
+    let stamp = &mig_name[..mig_name.len() - "_widget".len()];
+    assert_eq!(mig_name.rsplit('_').next(), Some("widget"));
+    assert!(
+        stamp.len() == 1 + 8 + 1 + 6
+            && stamp.starts_with('m')
+            && stamp[1..9].chars().all(|c| c.is_ascii_digit())
+            && stamp.as_bytes()[9] == b'_'
+            && stamp[10..].chars().all(|c| c.is_ascii_digit()),
+        "迁移名 mYYYYMMDD_NNNNNN_widget：{mig_name}"
+    );
+    let vec_pos = migration.find("vec![").unwrap();
+    let box_pos = migration.find("Box::new(widget_tables)").unwrap();
+    let close_pos = migration.rfind(']').unwrap();
+    assert!(
+        vec_pos < box_pos && box_pos < close_pos,
+        "Box::new 项落在 vec 内：{migration}"
+    );
+    let init_pos = migration.find("let init =").unwrap();
+    let widget_let_pos = migration.find("let widget_tables").unwrap();
+    assert!(
+        init_pos < widget_let_pos && widget_let_pos < vec_pos,
+        "let 块插在 vec! 前且不吞 init：{migration}"
+    );
+    // 幂等：重复 regen 的迁移登记是 skip 而非再插入（marker 命中）。
+    assert!(
+        migration
+            .matches(".table::<data::sys_widgets::Entity>()")
+            .count()
+            == 1
+    );
 
     // repos/mod.rs 与 services.rs
     let repos = fs::read_to_string(src.join("data/repos/mod.rs")).unwrap();

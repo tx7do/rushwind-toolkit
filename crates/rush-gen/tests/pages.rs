@@ -246,7 +246,7 @@ fn scaffold_for_entity(root: &Path) {
     fs::write(src.join("data.rs"), "mod misc;\n").unwrap();
     fs::write(
         src.join("migration.rs"),
-        "fn migrations() {\n    EntityTables::new(\"m1\", backend)\n        .table::<data::sys_configs::Entity>()\n        .build();\n}\n",
+        "fn migrations() {\n    let init = EntityTables::new(\"m1\", DatabaseBackend::Postgres)\n        .table::<data::sys_configs::Entity>()\n        .build();\n    vec![\n        Box::new(init),\n    ]\n}\n",
     )
     .unwrap();
     fs::write(

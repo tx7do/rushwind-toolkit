@@ -11,7 +11,9 @@
 //! 类型映射表（信息有损处宁可拒译也不降级）：PG 的 `format_type` 串
 //! 与 SQLite 的类型声明各走一张表；PG 原生 enum（`typtype='e'`）取
 //! pg_enum 的标签按 sortorder 映成 0..n-1 的生成器枚举（数值语义有
-//! 损，标签与顺序无损）；`bigint`/`numeric`/`json`/时间日期/数组在
+//! 损，标签与顺序无损）；时间列按落库风味分译（`timestamp`→
+//! NaiveDateTime、`timestamptz`→DateTime<FixedOffset>，生成实体的
+//! chrono 类型必须与列对得上）；`date`/`numeric`/`json`/数组仍在
 //! FieldKind 词汇表之外，进 skipped 明细——调用方看得见每一个没被翻
 //! 译的列。
 
@@ -57,16 +59,31 @@ pub struct PullReport {
 /// 从 PG `format_type` 串映射业务字段类型；`None` = 词汇表之外（进
 /// skipped）。
 pub fn map_pg_type(type_name: &str) -> Option<FieldKind> {
-    // 剥 (n)/(precision,scale) 修饰与数组记法。
-    let base = type_name.split('(').next().unwrap_or(type_name).trim();
-    match base {
+    // 剥 (n)/(precision,scale) 修饰（只剥括号组本身，保留其后缀——
+    // `timestamp(3) with time zone` 剥完还是带 tz 的全名）。
+    let mut base = String::with_capacity(type_name.len());
+    let mut depth = 0usize;
+    for ch in type_name.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => base.push(ch),
+            _ => {}
+        }
+    }
+    match base.trim() {
         "character varying" | "varchar" | "character" | "char" | "text" | "citext" | "uuid"
         | "name" => Some(FieldKind::String),
         "smallint" | "int2" | "integer" | "int" | "int4" => Some(FieldKind::Int32),
+        "bigint" | "int8" => Some(FieldKind::Int64),
         "boolean" | "bool" => Some(FieldKind::Bool),
         "real" | "float4" | "double precision" | "float8" => Some(FieldKind::Float64),
-        // bigint 的值域在词汇表外；numeric 带精度语义；json/时间日期/数组
-        // 均无对应 FieldKind。
+        // 两种落库风味分开译（生成实体的 chrono 类型必须与列的 PG 类型
+        // 对得上——NaiveDateTime 解不了 timestamptz 的返回值，反之亦然）。
+        "timestamp without time zone" | "timestamp" => Some(FieldKind::Timestamp),
+        "timestamp with time zone" | "timestamptz" => Some(FieldKind::TimestampTz),
+        // date/time 有独立的 PG 语义（无时分秒 / 纯时刻），NaiveDateTime
+        // 装不下原语义；numeric 带精度语义；json/数组同——宁可拒译。
         _ => None,
     }
 }
@@ -352,10 +369,28 @@ mod tests {
         assert_eq!(map_pg_type("boolean"), Some(FieldKind::Bool));
         assert_eq!(map_pg_type("double precision"), Some(FieldKind::Float64));
         assert_eq!(map_pg_type("real"), Some(FieldKind::Float64));
+        assert_eq!(map_pg_type("bigint"), Some(FieldKind::Int64));
+        assert_eq!(map_pg_type("int8"), Some(FieldKind::Int64));
+        // 时间两风味按落库分译（修饰剥取不吞 tz 后缀）。
+        assert_eq!(
+            map_pg_type("timestamp without time zone"),
+            Some(FieldKind::Timestamp)
+        );
+        assert_eq!(
+            map_pg_type("timestamp(3) without time zone"),
+            Some(FieldKind::Timestamp)
+        );
+        assert_eq!(
+            map_pg_type("timestamp with time zone"),
+            Some(FieldKind::TimestampTz)
+        );
+        assert_eq!(
+            map_pg_type("timestamp(0) with time zone"),
+            Some(FieldKind::TimestampTz)
+        );
         // 信息有损处拒译。
-        assert_eq!(map_pg_type("bigint"), None);
         assert_eq!(map_pg_type("numeric(10,2)"), None);
-        assert_eq!(map_pg_type("timestamp with time zone"), None);
+        assert_eq!(map_pg_type("date"), None);
         assert_eq!(map_pg_type("jsonb"), None);
         assert_eq!(map_pg_type("integer[]"), None);
     }

@@ -100,15 +100,23 @@ rush gen entity setting --global --field key:string
 # 枚举字段（proto enum → 文本列，仓内标准模式）
 rush gen entity task --field state:enum(0=DRAFT,1=ACTIVE@default=ACTIVE)
 
+# 时间字段（线上 RFC3339 字符串；落库分两味——timestamp 无时区、
+# timestamptz 带 FixedOffset；页面端三栈日期控件 + 区间搜索）
+rush gen entity task --field start_at:timestamp --field end_at:timestamptz
+
 # 生成后自动 cargo check 验证
 rush gen entity widget --field code:string --code-field code --check
 ```
 
-字段模型：`string|i32|u32|bool|f64|enum(0=A,1=B@default=B)`。`--code-field`
+字段模型：`string|i32|u32|i64|u64|bool|f64|timestamp|timestamptz|enum(0=A,1=B@default=B)`。
+`--code-field`
 要求该字段为 string，生成的实体给该列带 `#[sea_orm(unique)]`（建表派生
 生成 UNIQUE 约束，code 臂查询的唯一性落在 schema 上）。`--global` 同时
 裁剪消息、实体、repo（global 臂）与 service 的租户面。枚举按仓内标准模式生成：消息内嵌 enum、SeaORM 文本列、
-i32↔文本转换函数、`@default` 为未识别值回退。
+i32↔文本转换函数、`@default` 为未识别值回退。时间字段按仓内习语生成：
+proto `google.protobuf.Timestamp`、实体 chrono 列、边界转换走
+`rushwind-storage-seaorm-support` 的 time 助手（两味分别用 naive 与
+FixedOffset 对）。
 
 生成物：
 
@@ -123,6 +131,10 @@ i32↔文本转换函数、`@default` 为未识别值回退。
 - 五处注册（行级手术插入，幂等）：`data.rs` / `migration.rs` /
   `data/repos/mod.rs` / `services.rs` / `server/rest.rs`（use 导入块 +
   mount 表）
+- 独立建表迁移：`migration.rs` 的 migrations vec 尾部追加一个独立
+  `EntityTables` 迁移（迁移名带日期戳，house 惯例——新表面不进 init
+  链）；全新库随 init 依序建表，已有库（init 不重放）下次启动由
+  migrator 追踪应用，`gen undo` 成对摘除
 - proto MANIFEST 自动重建（`--skip-manifest` 跳过）
 - 实体规格文件 `.rush/<name>.json`：字段清单的唯一真相，`gen pages` 免重
   输 `--field` 的默认输入（应提交进仓）
